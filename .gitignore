@@ -1,0 +1,52 @@
+﻿# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Experiment outputs
+snapshots/
+results/
+result/
+runs/
+outputs/
+wandb/
+logs/
+*.log
+
+# Model checkpoints / weights
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# Local datasets
+UniMiSS/data/2D images/
+UniMiSS/data/3D images/
+UniMiSSPlus/COVID-19 RADIOGRAPHY/
+UniMiSSPlus/COVID-QU-Ex/
+UniMiSSPlus/NIH CXR/
+UniMiSSPlus/data/2D_images_examples/
+UniMiSSPlus/data/3D_subvolumes_examples/
+UniMiSSPlus/pycuda_drr/build/
+
+# Downstream local datasets and generated package artifacts
+UniMiSS/Downstream/RICORD/dataset/
+UniMiSS/Downstream/BCV/dataset/
+UniMiSSPlus/Downstream/3D/RICORD/dataset/
+UniMiSSPlus/Downstream/3D/BCV/dataset/
+UniMiSSPlus/Downstream/3D/BCV/build/
+UniMiSSPlus/Downstream/3D/BCV/dist/
+*.egg-info/
