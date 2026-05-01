@@ -2,6 +2,7 @@
 import json
 import os
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -97,6 +98,38 @@ def parse_args():
     parser.add_argument("--no_plots", action="store_true",
                         help="Disable PNG/TXT/NPZ evaluation artifacts.")
     parser.add_argument("--plot_dpi", type=int, default=160)
+    parser.add_argument("--export_onnx", action="store_true",
+                        help="Export an ONNX model after eval-only or after training finishes.")
+    parser.add_argument("--onnx_path", type=str, default=None,
+                        help="Output ONNX path. Defaults to <output_dir>/best.onnx after training or <output_dir>/eval.onnx in eval-only.")
+    parser.add_argument("--onnx_opset", type=int, default=17,
+                        help="ONNX opset version to use for export.")
+    parser.add_argument("--onnx_export_weights", choices=["best", "last", "current"], default="best",
+                        help="Which weights to export after training. Eval-only always exports the loaded current model.")
+    parser.add_argument("--benchmark_inference", action="store_true",
+                        help="Measure PyTorch inference speed on the test loader.")
+    parser.add_argument("--compare_onnx", action="store_true",
+                        help="Compare PyTorch and ONNX Runtime accuracy, outputs, and inference speed on the test loader.")
+    parser.add_argument("--benchmark_warmup_batches", type=int, default=2,
+                        help="Number of initial batches to exclude from speed timing.")
+    parser.add_argument("--benchmark_max_batches", type=int, default=0,
+                        help="Maximum benchmark batches. 0 means use the full test loader.")
+    parser.add_argument("--onnx_runtime_provider", choices=["auto", "cpu", "cuda"], default="auto",
+                        help="ONNX Runtime provider preference for comparison/benchmarking.")
+    parser.add_argument("--benchmark_output", type=str, default=None,
+                        help="JSON path for benchmark/ONNX comparison results. Defaults inside output_dir.")
+    parser.add_argument("--grad_cam", action="store_true",
+                        help="Save Grad-CAM overlays for samples from the test loader.")
+    parser.add_argument("--grad_cam_samples", type=int, default=8,
+                        help="Number of test samples to visualize with Grad-CAM.")
+    parser.add_argument("--grad_cam_layer", type=str, default="patch_embed2D4.proj1.conv",
+                        help="Target module name for Grad-CAM. Falls back to patch_embed2D4.proj.conv if missing.")
+    parser.add_argument("--grad_cam_class", type=int, default=None,
+                        help="Class index to explain. Defaults to predicted class for each sample.")
+    parser.add_argument("--grad_cam_dir", type=str, default=None,
+                        help="Directory for Grad-CAM images. Defaults to <output_dir>/grad_cam.")
+    parser.add_argument("--grad_cam_weights", choices=["best", "last", "current"], default="best",
+                        help="Which weights to use for Grad-CAM after training. Eval-only always uses the loaded current model.")
     return parser.parse_args()
 
 
@@ -185,6 +218,64 @@ def save_training_checkpoint(path, model, optimizer, epoch, best_score, args, la
         "args": vars(args),
         "label_names": list(label_names),
     }, path)
+
+
+def export_onnx_model(model, output_path, input_size, device, opset_version=17):
+    try:
+        import onnx  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "ONNX export requires the 'onnx' Python package. "
+            "Install it first, for example: pip install onnx"
+        ) from exc
+
+    export_model = unwrap_model(model).to(device).float()
+    was_training = export_model.training
+    export_model.eval()
+
+    dummy_input = torch.randn(1, 3, input_size, input_size, device=device, dtype=torch.float32)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        torch.onnx.export(
+            export_model,
+            dummy_input,
+            str(output_path),
+            export_params=True,
+            opset_version=opset_version,
+            do_constant_folding=True,
+            input_names=["image"],
+            output_names=["logits"],
+            dynamic_axes={
+                "image": {0: "batch"},
+                "logits": {0: "batch"},
+            },
+            dynamo=False,
+        )
+    finally:
+        if was_training:
+            export_model.train()
+    print(f"Exported ONNX model to {output_path}")
+
+
+def export_requested_onnx(model, args, output_dir, device, eval_only=False):
+    if not args.export_onnx:
+        return None
+
+    if args.onnx_path:
+        onnx_path = Path(args.onnx_path)
+    else:
+        onnx_path = output_dir / ("eval.onnx" if eval_only else f"{args.onnx_export_weights}.onnx")
+
+    if not eval_only and args.onnx_export_weights in ("best", "last"):
+        weights_path = output_dir / f"{args.onnx_export_weights}.pth"
+        if weights_path.exists():
+            load_model_weights(model, weights_path)
+        else:
+            print(f"ONNX export requested {args.onnx_export_weights}.pth, but it was not found; exporting current model.")
+
+    export_onnx_model(model, onnx_path, args.input_size, device, args.onnx_opset)
+    return onnx_path
 
 
 def build_loaders(args):
@@ -495,21 +586,62 @@ def forward_eval(model, images, task):
     return torch.sigmoid(logits)
 
 
-def evaluate(model, loader, task, device, label_names, output_dir=None, save_plots=True, plot_dpi=160,
-             artifact_prefix="eval"):
-    model.eval()
+def _sync_device(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def _speed_summary(seconds, samples, batches):
+    if seconds <= 0 or samples <= 0:
+        return {
+            "timed_seconds": float(seconds),
+            "timed_samples": int(samples),
+            "timed_batches": int(batches),
+            "samples_per_second": None,
+            "milliseconds_per_image": None,
+        }
+    return {
+        "timed_seconds": float(seconds),
+        "timed_samples": int(samples),
+        "timed_batches": int(batches),
+        "samples_per_second": float(samples / seconds),
+        "milliseconds_per_image": float(seconds * 1000.0 / samples),
+    }
+
+
+def collect_pytorch_predictions(model, loader, task, device, desc="eval", warmup_batches=0, max_batches=0):
     targets = []
     scores = []
+    timed_seconds = 0.0
+    timed_samples = 0
+    timed_batches = 0
+    model.eval()
     with torch.no_grad():
-        for images, labels in tqdm(loader, desc="eval"):
+        for batch_idx, (images, labels) in enumerate(tqdm(loader, desc=desc)):
+            if max_batches and batch_idx >= max_batches:
+                break
             images = images.to(device, non_blocking=True)
+            do_time = batch_idx >= warmup_batches
+            if do_time:
+                _sync_device(device)
+                start = time.perf_counter()
             probs = forward_eval(model, images, task)
+            if do_time:
+                _sync_device(device)
+                timed_seconds += time.perf_counter() - start
+                timed_samples += int(images.size(0))
+                timed_batches += 1
             scores.append(probs.cpu().numpy())
             targets.append(labels.cpu().numpy())
 
-    y_score = np.concatenate(scores, axis=0)
-    y_true = np.concatenate(targets, axis=0)
+    return (
+        np.concatenate(targets, axis=0),
+        np.concatenate(scores, axis=0),
+        _speed_summary(timed_seconds, timed_samples, timed_batches),
+    )
 
+
+def compute_eval_metrics(y_true, y_score, task, label_names):
     if task in ("covid", "covid_qu_ex"):
         y_pred = y_score.argmax(axis=1)
         acc = metrics.accuracy_score(y_true, y_pred)
@@ -520,8 +652,6 @@ def evaluate(model, loader, task, device, label_names, output_dir=None, save_plo
         except ValueError:
             result["macro_auc"] = None
         result["macro_ap"] = float(metrics.average_precision_score(y_true_one_hot, y_score, average="macro"))
-        if save_plots and output_dir is not None:
-            save_eval_artifacts(y_true, y_score, result, task, label_names, output_dir, artifact_prefix, plot_dpi)
         return result
 
     y_pred = (y_score >= 0.5).astype(np.float32)
@@ -549,9 +679,358 @@ def evaluate(model, loader, task, device, label_names, output_dir=None, save_plo
         "per_class_auc": per_class_auc,
         "per_class_ap": per_class_ap,
     }
+    return result
+
+
+def evaluate(model, loader, task, device, label_names, output_dir=None, save_plots=True, plot_dpi=160,
+             artifact_prefix="eval"):
+    y_true, y_score, _ = collect_pytorch_predictions(model, loader, task, device, desc="eval")
+    result = compute_eval_metrics(y_true, y_score, task, label_names)
     if save_plots and output_dir is not None:
         save_eval_artifacts(y_true, y_score, result, task, label_names, output_dir, artifact_prefix, plot_dpi)
     return result
+
+
+def _softmax_np(logits):
+    logits = logits - logits.max(axis=1, keepdims=True)
+    exp = np.exp(logits)
+    return exp / exp.sum(axis=1, keepdims=True)
+
+
+def _sigmoid_np(logits):
+    return 1.0 / (1.0 + np.exp(-logits))
+
+
+def create_onnx_session(onnx_path, provider_preference="auto"):
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise RuntimeError(
+            "ONNX comparison requires the 'onnxruntime' Python package. "
+            "Install it first, for example: pip install onnxruntime"
+        ) from exc
+
+    available = ort.get_available_providers()
+    if provider_preference == "cpu":
+        providers = ["CPUExecutionProvider"]
+    elif provider_preference == "cuda":
+        if "CUDAExecutionProvider" not in available:
+            raise RuntimeError(
+                "CUDAExecutionProvider is not available in onnxruntime. "
+                "Install onnxruntime-gpu or use --onnx_runtime_provider cpu."
+            )
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    else:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if "CUDAExecutionProvider" in available else ["CPUExecutionProvider"]
+
+    session = ort.InferenceSession(str(onnx_path), providers=providers)
+    print(f"Loaded ONNX Runtime session from {onnx_path} with providers={session.get_providers()}")
+    return session
+
+
+def forward_onnx_eval(session, images, task):
+    input_name = session.get_inputs()[0].name
+    if images.ndim == 5:
+        batch_size, crops, channels, height, width = images.shape
+        flat = images.reshape(batch_size * crops, channels, height, width)
+        logits = session.run(None, {input_name: flat.astype(np.float32)})[0]
+        logits = logits.reshape(batch_size, crops, -1).mean(axis=1)
+    else:
+        logits = session.run(None, {input_name: images.astype(np.float32)})[0]
+    if task in ("covid", "covid_qu_ex"):
+        return _softmax_np(logits)
+    return _sigmoid_np(logits)
+
+
+def collect_onnx_predictions(session, loader, task, desc="onnx eval", warmup_batches=0, max_batches=0):
+    targets = []
+    scores = []
+    timed_seconds = 0.0
+    timed_samples = 0
+    timed_batches = 0
+    for batch_idx, (images, labels) in enumerate(tqdm(loader, desc=desc)):
+        if max_batches and batch_idx >= max_batches:
+            break
+        images_np = images.cpu().numpy()
+        do_time = batch_idx >= warmup_batches
+        if do_time:
+            start = time.perf_counter()
+        probs = forward_onnx_eval(session, images_np, task)
+        if do_time:
+            timed_seconds += time.perf_counter() - start
+            timed_samples += int(images.size(0))
+            timed_batches += 1
+        scores.append(probs)
+        targets.append(labels.cpu().numpy())
+
+    return (
+        np.concatenate(targets, axis=0),
+        np.concatenate(scores, axis=0),
+        _speed_summary(timed_seconds, timed_samples, timed_batches),
+    )
+
+
+def compare_predictions(y_true, pytorch_score, onnx_score, task):
+    diff = np.abs(pytorch_score - onnx_score)
+    result = {
+        "max_abs_diff": float(diff.max()),
+        "mean_abs_diff": float(diff.mean()),
+    }
+    if task in ("covid", "covid_qu_ex"):
+        pt_pred = pytorch_score.argmax(axis=1)
+        onnx_pred = onnx_score.argmax(axis=1)
+        result["prediction_agreement"] = float(np.mean(pt_pred == onnx_pred))
+        result["pytorch_accuracy"] = float(metrics.accuracy_score(y_true, pt_pred))
+        result["onnx_accuracy"] = float(metrics.accuracy_score(y_true, onnx_pred))
+        result["accuracy_delta"] = float(result["onnx_accuracy"] - result["pytorch_accuracy"])
+    else:
+        pt_pred = (pytorch_score >= 0.5).astype(np.float32)
+        onnx_pred = (onnx_score >= 0.5).astype(np.float32)
+        result["label_prediction_agreement"] = float(np.mean(pt_pred == onnx_pred))
+        result["exact_prediction_agreement"] = float(np.mean(np.all(pt_pred == onnx_pred, axis=1)))
+    return result
+
+
+def ensure_onnx_for_comparison(model, args, output_dir, device, eval_only=False):
+    if args.onnx_path:
+        onnx_path = Path(args.onnx_path)
+    else:
+        onnx_path = output_dir / ("eval.onnx" if eval_only else f"{args.onnx_export_weights}.onnx")
+
+    should_export = args.export_onnx or not onnx_path.exists()
+    if not should_export:
+        return onnx_path
+
+    if not eval_only and args.onnx_export_weights in ("best", "last"):
+        weights_path = output_dir / f"{args.onnx_export_weights}.pth"
+        if weights_path.exists():
+            load_model_weights(model, weights_path)
+        else:
+            print(f"ONNX comparison requested {args.onnx_export_weights}.pth, but it was not found; exporting current model.")
+
+    export_onnx_model(model, onnx_path, args.input_size, device, args.onnx_opset)
+    return onnx_path
+
+
+def run_inference_benchmark(model, loader, task, device, label_names, args, output_dir,
+                            eval_only=False, pytorch_result=None):
+    max_batches = args.benchmark_max_batches if args.benchmark_max_batches > 0 else 0
+    payload = {}
+    onnx_path = None
+    session = None
+
+    if args.compare_onnx:
+        onnx_path = ensure_onnx_for_comparison(model, args, output_dir, device, eval_only=eval_only)
+        session = create_onnx_session(onnx_path, args.onnx_runtime_provider)
+
+    if args.benchmark_inference or args.compare_onnx:
+        y_true, pt_score, pt_speed = collect_pytorch_predictions(
+            model, loader, task, device,
+            desc="pytorch benchmark",
+            warmup_batches=args.benchmark_warmup_batches,
+            max_batches=max_batches,
+        )
+        payload["pytorch"] = {
+            "metrics": compute_eval_metrics(y_true, pt_score, task, label_names),
+            "speed": pt_speed,
+        }
+    else:
+        y_true, pt_score = None, None
+
+    if args.compare_onnx:
+        onnx_true, onnx_score, onnx_speed = collect_onnx_predictions(
+            session, loader, task,
+            desc="onnx benchmark",
+            warmup_batches=args.benchmark_warmup_batches,
+            max_batches=max_batches,
+        )
+        if y_true is None or pt_score is None:
+            y_true, pt_score, pt_speed = collect_pytorch_predictions(
+                model, loader, task, device,
+                desc="pytorch benchmark",
+                warmup_batches=args.benchmark_warmup_batches,
+                max_batches=max_batches,
+            )
+            payload["pytorch"] = {
+                "metrics": compute_eval_metrics(y_true, pt_score, task, label_names),
+                "speed": pt_speed,
+            }
+        if not np.array_equal(y_true, onnx_true):
+            raise RuntimeError("PyTorch and ONNX benchmark loaders produced different target order.")
+        payload["onnx"] = {
+            "path": str(onnx_path),
+            "providers": session.get_providers(),
+            "metrics": compute_eval_metrics(onnx_true, onnx_score, task, label_names),
+            "speed": onnx_speed,
+        }
+        payload["comparison"] = compare_predictions(y_true, pt_score, onnx_score, task)
+
+    if pytorch_result is not None and "pytorch" in payload:
+        payload["pytorch"]["full_eval_metrics"] = pytorch_result
+
+    if payload:
+        output_path = Path(args.benchmark_output) if args.benchmark_output else output_dir / "inference_benchmark.json"
+        _save_json(output_path, payload)
+        print(f"Saved inference benchmark to {output_path}")
+        if "pytorch" in payload:
+            print("PyTorch benchmark:", json.dumps(payload["pytorch"]["speed"]))
+        if "onnx" in payload:
+            print("ONNX benchmark:", json.dumps(payload["onnx"]["speed"]))
+            print("PyTorch vs ONNX:", json.dumps(payload["comparison"]))
+    return payload
+
+
+def normalization_stats(normalize):
+    normalize = normalize.lower()
+    if normalize == "imagenet":
+        return np.array([0.485, 0.456, 0.406]), np.array([0.229, 0.224, 0.225])
+    if normalize == "chestx-ray":
+        return np.array([0.5056, 0.5056, 0.5056]), np.array([0.252, 0.252, 0.252])
+    return np.array([0.0, 0.0, 0.0]), np.array([1.0, 1.0, 1.0])
+
+
+def tensor_to_image_array(image_tensor, normalize):
+    image = image_tensor.detach().cpu().float().numpy()
+    image = np.transpose(image, (1, 2, 0))
+    mean, std = normalization_stats(normalize)
+    image = image * std + mean
+    return np.clip(image, 0.0, 1.0)
+
+
+def get_module_by_name(model, module_name):
+    modules = dict(unwrap_model(model).named_modules())
+    if module_name in modules:
+        return modules[module_name], module_name
+    fallback = "patch_embed2D4.proj.conv"
+    if fallback in modules:
+        print(f"Grad-CAM layer '{module_name}' was not found; using '{fallback}' instead.")
+        return modules[fallback], fallback
+    preview = ", ".join(list(modules.keys())[:20])
+    raise ValueError(f"Grad-CAM layer '{module_name}' was not found. First modules: {preview}")
+
+
+def compute_grad_cam(model, image, task, target_class, target_layer_name):
+    model = unwrap_model(model)
+    model.eval()
+    target_layer, resolved_layer_name = get_module_by_name(model, target_layer_name)
+    captured = {}
+
+    def forward_hook(_module, _inputs, output):
+        captured["activation"] = output
+
+    def backward_hook(_module, _grad_input, grad_output):
+        captured["gradient"] = grad_output[0]
+
+    forward_handle = target_layer.register_forward_hook(forward_hook)
+    backward_handle = target_layer.register_full_backward_hook(backward_hook)
+    try:
+        model.zero_grad(set_to_none=True)
+        logits = model(image)
+        if target_class is None:
+            if task in ("covid", "covid_qu_ex"):
+                class_idx = int(logits.argmax(dim=1).item())
+            else:
+                class_idx = int(torch.sigmoid(logits).argmax(dim=1).item())
+        else:
+            class_idx = int(target_class)
+        score = logits[:, class_idx].sum()
+        score.backward()
+
+        activation = captured["activation"].detach()
+        gradient = captured["gradient"].detach()
+        weights = gradient.mean(dim=(2, 3), keepdim=True)
+        cam = torch.relu((weights * activation).sum(dim=1, keepdim=True))
+        cam = torch.nn.functional.interpolate(
+            cam,
+            size=image.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+        cam = cam[0, 0]
+        cam = cam - cam.min()
+        cam_max = cam.max()
+        if cam_max > 0:
+            cam = cam / cam_max
+        probs = torch.softmax(logits, dim=1) if task in ("covid", "covid_qu_ex") else torch.sigmoid(logits)
+        return cam.cpu().numpy(), int(class_idx), float(probs[0, class_idx].detach().cpu()), resolved_layer_name
+    finally:
+        forward_handle.remove()
+        backward_handle.remove()
+
+
+def save_grad_cam_overlay(base_image, cam, output_path, title=None):
+    heatmap = plt.get_cmap("jet")(cam)[..., :3]
+    overlay = np.clip(0.55 * base_image + 0.45 * heatmap, 0.0, 1.0)
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
+    axes[0].imshow(base_image)
+    axes[0].set_title("Image")
+    axes[1].imshow(cam, cmap="jet")
+    axes[1].set_title("Grad-CAM")
+    axes[2].imshow(overlay)
+    axes[2].set_title("Overlay")
+    for ax in axes:
+        ax.axis("off")
+    if title:
+        fig.suptitle(title, fontsize=10)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+
+def run_grad_cam(model, loader, task, device, label_names, args, output_dir, eval_only=False):
+    if not args.grad_cam:
+        return
+
+    if not eval_only and args.grad_cam_weights in ("best", "last"):
+        weights_path = Path(output_dir) / f"{args.grad_cam_weights}.pth"
+        if weights_path.exists():
+            load_model_weights(model, weights_path)
+        else:
+            print(f"Grad-CAM requested {args.grad_cam_weights}.pth, but it was not found; using current model.")
+
+    grad_cam_dir = Path(args.grad_cam_dir) if args.grad_cam_dir else Path(output_dir) / "grad_cam"
+    grad_cam_dir.mkdir(parents=True, exist_ok=True)
+    model = unwrap_model(model).to(device).float()
+    saved = []
+    sample_idx = 0
+
+    for images, labels in tqdm(loader, desc="grad-cam"):
+        if sample_idx >= args.grad_cam_samples:
+            break
+        if images.ndim == 5:
+            images = images[:, 0]
+        images = images.to(device, non_blocking=True)
+        for item_idx in range(images.size(0)):
+            if sample_idx >= args.grad_cam_samples:
+                break
+            image = images[item_idx:item_idx + 1].clone().detach().requires_grad_(True)
+            cam, class_idx, confidence, layer_name = compute_grad_cam(
+                model, image, task, args.grad_cam_class, args.grad_cam_layer
+            )
+            base_image = tensor_to_image_array(image[0], args.normalize)
+            label_value = labels[item_idx].detach().cpu()
+            if task in ("covid", "covid_qu_ex"):
+                true_label = int(label_value.item())
+                true_name = label_names[true_label]
+            else:
+                positive = [label_names[i] for i, value in enumerate(label_value.numpy()) if value > 0.5]
+                true_name = "|".join(positive) if positive else "None"
+            pred_name = label_names[class_idx]
+            output_path = grad_cam_dir / f"grad_cam_{sample_idx:04d}_class_{class_idx}.png"
+            title = f"target={pred_name} conf={confidence:.4f} true={true_name}"
+            save_grad_cam_overlay(base_image, cam, output_path, title)
+            saved.append({
+                "path": str(output_path),
+                "target_class": class_idx,
+                "target_name": pred_name,
+                "confidence": confidence,
+                "true_label": true_name,
+                "layer": layer_name,
+            })
+            sample_idx += 1
+
+    _save_json(grad_cam_dir / "grad_cam_summary.json", saved)
+    print(f"Saved {len(saved)} Grad-CAM overlays to {grad_cam_dir}")
 
 
 def train_one_epoch(model, loader, criterion, optimizer, task, device, epoch, args, total_steps):
@@ -628,6 +1107,12 @@ def main():
             artifact_prefix="eval",
         )
         print(format_metrics_line(result))
+        export_requested_onnx(model, args, output_dir, device, eval_only=True)
+        run_inference_benchmark(
+            model, test_loader, args.task, device, label_names, args, output_dir,
+            eval_only=True, pytorch_result=result,
+        )
+        run_grad_cam(model, test_loader, args.task, device, label_names, args, output_dir, eval_only=True)
         return
 
     total_steps = len(train_loader) * args.epochs
@@ -658,6 +1143,10 @@ def main():
             torch.save(unwrap_model(model).state_dict(), output_dir / "best.pth")
             _save_json(output_dir / "best_metrics.json", result)
         save_training_checkpoint(output_dir / "checkpoint.pth", model, optimizer, epoch, best_score, args, label_names)
+
+    export_requested_onnx(model, args, output_dir, device)
+    run_inference_benchmark(model, test_loader, args.task, device, label_names, args, output_dir)
+    run_grad_cam(model, test_loader, args.task, device, label_names, args, output_dir)
 
 
 if __name__ == "__main__":
