@@ -250,6 +250,7 @@ Useful benchmark flags:
 --benchmark_inference
 --benchmark_max_batches 20
 --onnx_runtime_provider auto
+--onnx_batch_size 32
 ```
 
 ## Multiple Seeds
@@ -271,7 +272,9 @@ After all seeds finish, the best seed is selected by accuracy for COVID/COVID-QU
 
 The selected seed metadata is written to `best_seed.json`.
 
-When using `--seeds`, leave `--onnx_path`, `--benchmark_output`, and `--grad_cam_dir` unset so each seed can write artifacts inside its own output folder.
+If `--export_onnx`, `--compare_onnx`, `--benchmark_inference`, or `--grad_cam` are used together with `--seeds`, those post-processing steps are skipped inside each seed run and executed once after all seeds finish using the promoted parent `best.pth`.
+
+When using `--seeds`, leave `--onnx_path`, `--benchmark_output`, and `--grad_cam_dir` unset so post-processing writes artifacts inside the parent output folder.
 
 ## Grad-CAM
 

@@ -3,6 +3,7 @@ import gc
 import json
 import os
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -119,6 +120,8 @@ def parse_args():
                         help="Maximum benchmark batches. 0 means use the full test loader.")
     parser.add_argument("--onnx_runtime_provider", choices=["auto", "cpu", "cuda"], default="auto",
                         help="ONNX Runtime provider preference for comparison/benchmarking.")
+    parser.add_argument("--onnx_batch_size", type=int, default=32,
+                        help="Chunk size used only for ONNX Runtime evaluation/benchmarking. Use 0 to run full DataLoader batches.")
     parser.add_argument("--benchmark_output", type=str, default=None,
                         help="JSON path for benchmark/ONNX comparison results. Defaults inside output_dir.")
     parser.add_argument("--grad_cam", action="store_true",
@@ -735,21 +738,32 @@ def create_onnx_session(onnx_path, provider_preference="auto"):
     return session
 
 
-def forward_onnx_eval(session, images, task):
+def forward_onnx_eval(session, images, task, onnx_batch_size=32):
     input_name = session.get_inputs()[0].name
+
+    def run_chunks(array):
+        array = array.astype(np.float32)
+        chunk_size = int(onnx_batch_size or 0)
+        if chunk_size <= 0 or array.shape[0] <= chunk_size:
+            return session.run(None, {input_name: array})[0]
+        outputs = []
+        for start in range(0, array.shape[0], chunk_size):
+            outputs.append(session.run(None, {input_name: array[start:start + chunk_size]})[0])
+        return np.concatenate(outputs, axis=0)
+
     if images.ndim == 5:
         batch_size, crops, channels, height, width = images.shape
         flat = images.reshape(batch_size * crops, channels, height, width)
-        logits = session.run(None, {input_name: flat.astype(np.float32)})[0]
+        logits = run_chunks(flat)
         logits = logits.reshape(batch_size, crops, -1).mean(axis=1)
     else:
-        logits = session.run(None, {input_name: images.astype(np.float32)})[0]
+        logits = run_chunks(images)
     if task in ("covid", "covid_qu_ex"):
         return _softmax_np(logits)
     return _sigmoid_np(logits)
 
 
-def collect_onnx_predictions(session, loader, task, desc="onnx eval", warmup_batches=0, max_batches=0):
+def collect_onnx_predictions(session, loader, task, desc="onnx eval", warmup_batches=0, max_batches=0, onnx_batch_size=32):
     targets = []
     scores = []
     timed_seconds = 0.0
@@ -762,7 +776,7 @@ def collect_onnx_predictions(session, loader, task, desc="onnx eval", warmup_bat
         do_time = batch_idx >= warmup_batches
         if do_time:
             start = time.perf_counter()
-        probs = forward_onnx_eval(session, images_np, task)
+        probs = forward_onnx_eval(session, images_np, task, onnx_batch_size)
         if do_time:
             timed_seconds += time.perf_counter() - start
             timed_samples += int(images.size(0))
@@ -850,6 +864,7 @@ def run_inference_benchmark(model, loader, task, device, label_names, args, outp
             desc="onnx benchmark",
             warmup_batches=args.benchmark_warmup_batches,
             max_batches=max_batches,
+            onnx_batch_size=args.onnx_batch_size,
         )
         if y_true is None or pt_score is None:
             y_true, pt_score, pt_speed = collect_pytorch_predictions(
@@ -1269,12 +1284,17 @@ def main():
     seeds = parse_seed_list(args.seeds)
     base_output_dir = Path(args.output_dir)
     base_output_dir.mkdir(parents=True, exist_ok=True)
+    run_post_after_seeds = args.export_onnx or args.compare_onnx or args.benchmark_inference or args.grad_cam
     seed_results = []
     for seed in seeds:
         run_args = argparse.Namespace(**vars(args))
         run_args.seeds = None
         run_args.seed = seed
         run_args.output_dir = str(base_output_dir / f"seed_{seed}")
+        run_args.export_onnx = False
+        run_args.compare_onnx = False
+        run_args.benchmark_inference = False
+        run_args.grad_cam = False
         print(f"=== Running seed {seed} -> {run_args.output_dir} ===")
         metrics_payload = run_experiment(run_args)
         if torch.cuda.is_available():
@@ -1289,6 +1309,19 @@ def main():
 
     summary = summarize_seed_results(seed_results, base_output_dir, args.task)
     print("Multi-seed summary:", json.dumps(summary["aggregate"]))
+
+    best_run = summary.get("best_run")
+    if run_post_after_seeds and best_run is not None:
+        post_args = argparse.Namespace(**vars(args))
+        post_args.seeds = None
+        post_args.seed = int(best_run["seed"])
+        post_args.output_dir = str(base_output_dir)
+        post_args.checkpoint_path = str(base_output_dir / "best.pth")
+        post_args.resume_path = None
+        post_args.pre_train = False
+        post_args.eval_only = True
+        print(f"=== Running post-processing once with best seed {post_args.seed} ===")
+        run_experiment(post_args)
 
 
 if __name__ == "__main__":
