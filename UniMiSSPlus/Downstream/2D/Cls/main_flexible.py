@@ -1,4 +1,5 @@
-﻿import argparse
+import argparse
+import gc
 import json
 import os
 import random
@@ -87,6 +88,8 @@ def parse_args():
     parser.add_argument("--optimizer", choices=["AdamW", "Adam", "SGD"], default="AdamW")
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--seeds", type=str, default=None,
+                        help="Comma-separated seeds to run sequentially, e.g. '1234,2024,42'. Each run writes to <output_dir>/seed_<seed>.")
     parser.add_argument("--normalize", choices=["chestx-ray", "imagenet", "none"], default="chestx-ray")
     parser.add_argument("--test_augment", action="store_true",
                         help="Use TenCrop at test time. Slower, but matches the original downstream script.")
@@ -122,6 +125,10 @@ def parse_args():
                         help="Save Grad-CAM overlays for samples from the test loader.")
     parser.add_argument("--grad_cam_samples", type=int, default=8,
                         help="Number of test samples to visualize with Grad-CAM.")
+    parser.add_argument("--grad_cam_per_class", action="store_true",
+                        help="For single-label tasks, save a balanced set of Grad-CAM overlays by true class.")
+    parser.add_argument("--grad_cam_per_class_samples", type=int, default=1,
+                        help="Number of Grad-CAM overlays to save for each class when --grad_cam_per_class is set.")
     parser.add_argument("--grad_cam_layer", type=str, default="patch_embed2D4.proj1.conv",
                         help="Target module name for Grad-CAM. Falls back to patch_embed2D4.proj.conv if missing.")
     parser.add_argument("--grad_cam_class", type=int, default=None,
@@ -981,6 +988,9 @@ def run_grad_cam(model, loader, task, device, label_names, args, output_dir, eva
     if not args.grad_cam:
         return
 
+    if args.grad_cam_per_class and task not in ("covid", "covid_qu_ex"):
+        raise ValueError("--grad_cam_per_class is only supported for single-label tasks: covid and covid_qu_ex")
+
     if not eval_only and args.grad_cam_weights in ("best", "last"):
         weights_path = Path(output_dir) / f"{args.grad_cam_weights}.pth"
         if weights_path.exists():
@@ -994,29 +1004,50 @@ def run_grad_cam(model, loader, task, device, label_names, args, output_dir, eva
     saved = []
     sample_idx = 0
 
+    if args.grad_cam_per_class:
+        per_class_limit = max(1, int(args.grad_cam_per_class_samples))
+        saved_per_class = {class_idx: 0 for class_idx in range(len(label_names))}
+        total_target = per_class_limit * len(label_names)
+    else:
+        per_class_limit = None
+        saved_per_class = None
+        total_target = max(0, int(args.grad_cam_samples))
+
     for images, labels in tqdm(loader, desc="grad-cam"):
-        if sample_idx >= args.grad_cam_samples:
+        if sample_idx >= total_target:
             break
         if images.ndim == 5:
             images = images[:, 0]
         images = images.to(device, non_blocking=True)
         for item_idx in range(images.size(0)):
-            if sample_idx >= args.grad_cam_samples:
+            if sample_idx >= total_target:
                 break
-            image = images[item_idx:item_idx + 1].clone().detach().requires_grad_(True)
-            cam, class_idx, confidence, layer_name = compute_grad_cam(
-                model, image, task, args.grad_cam_class, args.grad_cam_layer
-            )
-            base_image = tensor_to_image_array(image[0], args.normalize)
+
             label_value = labels[item_idx].detach().cpu()
+            true_label = None
+            true_name = None
+            target_class = args.grad_cam_class
             if task in ("covid", "covid_qu_ex"):
                 true_label = int(label_value.item())
                 true_name = label_names[true_label]
+                if args.grad_cam_per_class:
+                    if saved_per_class[true_label] >= per_class_limit:
+                        continue
+                    target_class = true_label
             else:
                 positive = [label_names[i] for i, value in enumerate(label_value.numpy()) if value > 0.5]
                 true_name = "|".join(positive) if positive else "None"
+
+            image = images[item_idx:item_idx + 1].clone().detach().requires_grad_(True)
+            cam, class_idx, confidence, layer_name = compute_grad_cam(
+                model, image, task, target_class, args.grad_cam_layer
+            )
+            base_image = tensor_to_image_array(image[0], args.normalize)
             pred_name = label_names[class_idx]
-            output_path = grad_cam_dir / f"grad_cam_{sample_idx:04d}_class_{class_idx}.png"
+            if args.grad_cam_per_class:
+                output_path = grad_cam_dir / f"grad_cam_true_{true_label:02d}_{true_name}_{saved_per_class[true_label]:02d}.png"
+            else:
+                output_path = grad_cam_dir / f"grad_cam_{sample_idx:04d}_class_{class_idx}.png"
             title = f"target={pred_name} conf={confidence:.4f} true={true_name}"
             save_grad_cam_overlay(base_image, cam, output_path, title)
             saved.append({
@@ -1027,10 +1058,83 @@ def run_grad_cam(model, loader, task, device, label_names, args, output_dir, eva
                 "true_label": true_name,
                 "layer": layer_name,
             })
+            if args.grad_cam_per_class:
+                saved[-1]["true_class"] = true_label
+                saved_per_class[true_label] += 1
             sample_idx += 1
+
+    if args.grad_cam_per_class:
+        missing = [label_names[class_idx] for class_idx, count in saved_per_class.items() if count < per_class_limit]
+        if missing:
+            print(f"Grad-CAM per-class warning: missing samples for {missing}")
 
     _save_json(grad_cam_dir / "grad_cam_summary.json", saved)
     print(f"Saved {len(saved)} Grad-CAM overlays to {grad_cam_dir}")
+
+def parse_seed_list(seeds_text):
+    seeds = []
+    for item in seeds_text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        seeds.append(int(item))
+    if not seeds:
+        raise ValueError("--seeds must contain at least one integer seed")
+    return seeds
+
+
+def primary_score_key(task):
+    return "accuracy" if task in ("covid", "covid_qu_ex") else "mean_auc"
+
+
+def promote_best_seed(seed_results, output_dir, task):
+    if not seed_results:
+        return None
+    score_key = primary_score_key(task)
+    valid_runs = [run for run in seed_results if run.get("metrics", {}).get(score_key) is not None]
+    if not valid_runs:
+        return None
+
+    best_run = max(valid_runs, key=lambda run: float(run["metrics"][score_key]))
+    best_run["score_key"] = score_key
+    best_run["score"] = float(best_run["metrics"][score_key])
+
+    output_dir = Path(output_dir)
+    best_seed_dir = Path(best_run["output_dir"])
+    for name in ("best.pth", "best_metrics.json", "checkpoint.pth", "last.pth", "best.onnx", "inference_benchmark.json"):
+        source = best_seed_dir / name
+        if source.exists():
+            shutil.copy2(source, output_dir / name)
+
+    _save_json(output_dir / "best_seed.json", best_run)
+    print(
+        f"Best seed: {best_run['seed']} ({score_key}={best_run['score']:.6f}). "
+        f"Promoted checkpoint to {output_dir / 'best.pth'}"
+    )
+    return best_run
+
+
+def summarize_seed_results(seed_results, output_dir, task):
+    best_run = promote_best_seed(seed_results, output_dir, task)
+    summary = {"runs": seed_results, "best_run": best_run, "aggregate": {}}
+    skip_keys = {"epoch", "lr", "train_loss"}
+    metric_keys = sorted({
+        key
+        for run in seed_results
+        for key, value in run.get("metrics", {}).items()
+        if isinstance(value, (int, float)) and key not in skip_keys and value is not None
+    })
+    for key in metric_keys:
+        values = [float(run["metrics"][key]) for run in seed_results if key in run.get("metrics", {}) and run["metrics"][key] is not None]
+        if values:
+            summary["aggregate"][key] = {
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+                "min": float(np.min(values)),
+                "max": float(np.max(values)),
+            }
+    _save_json(Path(output_dir) / "multi_seed_summary.json", summary)
+    return summary
 
 
 def train_one_epoch(model, loader, criterion, optimizer, task, device, epoch, args, total_steps):
@@ -1058,8 +1162,7 @@ def train_one_epoch(model, loader, criterion, optimizer, task, device, epoch, ar
     return float(np.mean(losses)), float(last_lr)
 
 
-def main():
-    args = parse_args()
+def run_experiment(args):
     if args.checkpoint_path and args.resume_path:
         raise ValueError("Use either --checkpoint_path or --resume_path, not both.")
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -1113,12 +1216,13 @@ def main():
             eval_only=True, pytorch_result=result,
         )
         run_grad_cam(model, test_loader, args.task, device, label_names, args, output_dir, eval_only=True)
-        return
+        return result
 
     total_steps = len(train_loader) * args.epochs
     if start_epoch >= args.epochs:
         print(f"Nothing to train: resume epoch {start_epoch} >= --epochs {args.epochs}")
-        return
+        return None
+    best_result = None
     for epoch in range(start_epoch, args.epochs):
         train_loss, lr = train_one_epoch(model, train_loader, criterion, optimizer, args.task, device, epoch, args, total_steps)
         result = evaluate(
@@ -1141,12 +1245,50 @@ def main():
         if score is not None and score > best_score:
             best_score = score
             torch.save(unwrap_model(model).state_dict(), output_dir / "best.pth")
+            best_result = dict(result)
             _save_json(output_dir / "best_metrics.json", result)
         save_training_checkpoint(output_dir / "checkpoint.pth", model, optimizer, epoch, best_score, args, label_names)
 
     export_requested_onnx(model, args, output_dir, device)
     run_inference_benchmark(model, test_loader, args.task, device, label_names, args, output_dir)
     run_grad_cam(model, test_loader, args.task, device, label_names, args, output_dir)
+    return best_result
+
+
+def main():
+    args = parse_args()
+    if not args.seeds:
+        run_experiment(args)
+        return
+
+    if args.resume_path:
+        raise ValueError("--seeds cannot be combined with --resume_path; run each resumed seed separately.")
+    if args.onnx_path or args.benchmark_output or args.grad_cam_dir:
+        raise ValueError("When using --seeds, leave --onnx_path, --benchmark_output and --grad_cam_dir unset so each seed writes inside its own output folder.")
+
+    seeds = parse_seed_list(args.seeds)
+    base_output_dir = Path(args.output_dir)
+    base_output_dir.mkdir(parents=True, exist_ok=True)
+    seed_results = []
+    for seed in seeds:
+        run_args = argparse.Namespace(**vars(args))
+        run_args.seeds = None
+        run_args.seed = seed
+        run_args.output_dir = str(base_output_dir / f"seed_{seed}")
+        print(f"=== Running seed {seed} -> {run_args.output_dir} ===")
+        metrics_payload = run_experiment(run_args)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        if metrics_payload is not None:
+            seed_results.append({
+                "seed": seed,
+                "output_dir": run_args.output_dir,
+                "metrics": metrics_payload,
+            })
+
+    summary = summarize_seed_results(seed_results, base_output_dir, args.task)
+    print("Multi-seed summary:", json.dumps(summary["aggregate"]))
 
 
 if __name__ == "__main__":

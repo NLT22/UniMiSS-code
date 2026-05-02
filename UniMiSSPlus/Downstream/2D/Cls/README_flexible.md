@@ -1,4 +1,4 @@
-﻿# Flexible UniMiSS+ 2D Classification
+# Flexible UniMiSS+ 2D Classification
 
 `main_flexible.py` adds path-driven downstream training/evaluation without changing the original downstream entrypoint.
 
@@ -252,6 +252,27 @@ Useful benchmark flags:
 --onnx_runtime_provider auto
 ```
 
+## Multiple Seeds
+
+Run the same experiment across several seeds sequentially:
+
+```bash
+--seeds "1234,2024,42" \
+--output_dir "/kaggle/working/results/quex_multiseed"
+```
+
+Each seed writes to its own subfolder, for example `seed_1234`, `seed_2024`, and `seed_42`. The parent output folder gets `multi_seed_summary.json` with per-seed metrics plus mean/std/min/max for numeric metrics such as accuracy, macro AUC, and macro AP.
+
+After all seeds finish, the best seed is selected by accuracy for COVID/COVID-QU-Ex and by mean AUC for NIH. Its main artifacts are copied back to the parent output folder, so downstream evaluation can keep using:
+
+```bash
+--checkpoint_path "/kaggle/working/results/quex_multiseed/best.pth"
+```
+
+The selected seed metadata is written to `best_seed.json`.
+
+When using `--seeds`, leave `--onnx_path`, `--benchmark_output`, and `--grad_cam_dir` unset so each seed can write artifacts inside its own output folder.
+
 ## Grad-CAM
 
 Save Grad-CAM overlays for test samples:
@@ -276,6 +297,16 @@ Outputs are saved to `<output_dir>/grad_cam` with a `grad_cam_summary.json`. By 
 --grad_cam_weights best
 --grad_cam_dir "/kaggle/working/grad_cam"
 ```
+
+For COVID/COVID-QU-Ex single-label tasks, save a balanced set with one image per true class:
+
+```bash
+--grad_cam \
+--grad_cam_per_class \
+--grad_cam_per_class_samples 1
+```
+
+When `--grad_cam_per_class` is set, the Grad-CAM target is the true class of each selected image. This avoids saving all overlays from whichever class appears first in the test loader.
 
 After training, Grad-CAM uses `best.pth` by default. Use `--grad_cam_weights last` or `--grad_cam_weights current` to change that.
 
