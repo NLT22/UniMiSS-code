@@ -1,0 +1,48 @@
+{
+  "pytorch": {
+    "metrics": {
+      "accuracy": 0.9657372400756143,
+      "macro_auc": 0.9959758547259678,
+      "macro_ap": 0.9934217203919554
+    },
+    "speed": {
+      "timed_seconds": 6.239984278276097,
+      "timed_samples": 3976,
+      "timed_batches": 32,
+      "samples_per_second": 637.181092561733,
+      "milliseconds_per_image": 1.5694125448380525
+    },
+    "full_eval_metrics": {
+      "accuracy": 0.9657372400756143,
+      "macro_auc": 0.9959758547259678,
+      "macro_ap": 0.9934217203919554
+    }
+  },
+  "onnx": {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/covid_other_normal_eval/eval.onnx",
+    "providers": [
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "metrics": {
+      "accuracy": 0.9657372400756143,
+      "macro_auc": 0.9959757308620955,
+      "macro_ap": 0.9934213295200265
+    },
+    "speed": {
+      "timed_seconds": 6.682672762777656,
+      "timed_samples": 3976,
+      "timed_batches": 32,
+      "samples_per_second": 594.9715242898372,
+      "milliseconds_per_image": 1.6807527069360302
+    }
+  },
+  "comparison": {
+    "max_abs_diff": 0.0005686283111572266,
+    "mean_abs_diff": 1.0646392183844e-05,
+    "prediction_agreement": 1.0,
+    "pytorch_accuracy": 0.9657372400756143,
+    "onnx_accuracy": 0.9657372400756143,
+    "accuracy_delta": 0.0
+  }
+}

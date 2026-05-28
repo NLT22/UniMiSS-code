@@ -1,0 +1,52 @@
+{
+  "runs": [
+    {
+      "seed": 42,
+      "output_dir": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/covid_other_normal/seed_42",
+      "metrics": {
+        "accuracy": 0.9510869565217391,
+        "macro_auc": 0.9926026448933286,
+        "macro_ap": 0.9882831651976208,
+        "epoch": 31,
+        "train_loss": 0.16063405618183596,
+        "lr": 1.1756124650687124e-05
+      },
+      "score_key": "accuracy",
+      "score": 0.9510869565217391
+    }
+  ],
+  "best_run": {
+    "seed": 42,
+    "output_dir": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/covid_other_normal/seed_42",
+    "metrics": {
+      "accuracy": 0.9510869565217391,
+      "macro_auc": 0.9926026448933286,
+      "macro_ap": 0.9882831651976208,
+      "epoch": 31,
+      "train_loss": 0.16063405618183596,
+      "lr": 1.1756124650687124e-05
+    },
+    "score_key": "accuracy",
+    "score": 0.9510869565217391
+  },
+  "aggregate": {
+    "accuracy": {
+      "mean": 0.9510869565217391,
+      "std": 0.0,
+      "min": 0.9510869565217391,
+      "max": 0.9510869565217391
+    },
+    "macro_ap": {
+      "mean": 0.9882831651976208,
+      "std": 0.0,
+      "min": 0.9882831651976208,
+      "max": 0.9882831651976208
+    },
+    "macro_auc": {
+      "mean": 0.9926026448933286,
+      "std": 0.0,
+      "min": 0.9926026448933286,
+      "max": 0.9926026448933286
+    }
+  }
+}

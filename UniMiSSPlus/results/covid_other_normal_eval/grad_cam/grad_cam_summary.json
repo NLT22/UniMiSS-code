@@ -1,0 +1,29 @@
+[
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/covid_other_normal_eval/grad_cam/grad_cam_true_00_COVID_00.png",
+    "target_class": 0,
+    "target_name": "COVID",
+    "confidence": 0.999994158744812,
+    "true_label": "COVID",
+    "layer": "patch_embed2D4.proj1.conv",
+    "true_class": 0
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/covid_other_normal_eval/grad_cam/grad_cam_true_02_Normal_00.png",
+    "target_class": 2,
+    "target_name": "Normal",
+    "confidence": 0.9281702637672424,
+    "true_label": "Normal",
+    "layer": "patch_embed2D4.proj1.conv",
+    "true_class": 2
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/covid_other_normal_eval/grad_cam/grad_cam_true_01_Other_00.png",
+    "target_class": 1,
+    "target_name": "Other",
+    "confidence": 0.9983898401260376,
+    "true_label": "Other",
+    "layer": "patch_embed2D4.proj1.conv",
+    "true_class": 1
+  }
+]

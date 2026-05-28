@@ -720,6 +720,12 @@ def create_onnx_session(onnx_path, provider_preference="auto"):
             "Install it first, for example: pip install onnxruntime"
         ) from exc
 
+    if provider_preference != "cpu" and hasattr(ort, "preload_dlls"):
+        try:
+            ort.preload_dlls(cuda=True, cudnn=True)
+        except Exception as exc:
+            print(f"ONNX Runtime CUDA preload warning: {exc}")
+
     available = ort.get_available_providers()
     if provider_preference == "cpu":
         providers = ["CPUExecutionProvider"]
@@ -734,7 +740,14 @@ def create_onnx_session(onnx_path, provider_preference="auto"):
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if "CUDAExecutionProvider" in available else ["CPUExecutionProvider"]
 
     session = ort.InferenceSession(str(onnx_path), providers=providers)
-    print(f"Loaded ONNX Runtime session from {onnx_path} with providers={session.get_providers()}")
+    active_providers = session.get_providers()
+    if provider_preference == "cuda" and "CUDAExecutionProvider" not in active_providers:
+        raise RuntimeError(
+            "ONNX Runtime CUDA provider was requested but could not be activated. "
+            "This usually means the installed onnxruntime-gpu build does not match the local CUDA/cuDNN libraries. "
+            "Use --onnx_runtime_provider cpu, or install an onnxruntime-gpu build and CUDA/cuDNN runtime that match each other."
+        )
+    print(f"Loaded ONNX Runtime session from {onnx_path} with providers={active_providers}")
     return session
 
 
@@ -1326,4 +1339,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

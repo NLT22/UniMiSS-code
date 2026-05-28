@@ -18,7 +18,6 @@ Thumbs.db
 
 # Experiment outputs
 snapshots/
-results/
 result/
 runs/
 outputs/
@@ -26,11 +25,14 @@ wandb/
 logs/
 *.log
 
-# Model checkpoints / weights
+# Model checkpoints / weights — keep results/ but exclude weight files inside
 *.pth
 *.pt
 *.ckpt
-*.onnx
+
+# Allow UniMiSSPlus/results but exclude large binaries inside
+UniMiSSPlus/results/**/*.onnx
+UniMiSSPlus/results/**/*.npz
 
 # Local datasets
 UniMiSS/data/2D images/

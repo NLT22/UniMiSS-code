@@ -1,0 +1,66 @@
+[
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0000_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.6973215341567993,
+    "true_label": "Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0001_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.6481748223304749,
+    "true_label": "Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0002_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.6142633557319641,
+    "true_label": "Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0003_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.6331976056098938,
+    "true_label": "Infiltration|Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0004_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.505365788936615,
+    "true_label": "Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0005_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.510901689529419,
+    "true_label": "Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0006_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.6808486580848694,
+    "true_label": "Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  },
+  {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/unimiss_nih_eval/grad_cam/grad_cam_0007_class_14.png",
+    "target_class": 14,
+    "target_name": "No Finding",
+    "confidence": 0.6579785346984863,
+    "true_label": "Hernia",
+    "layer": "patch_embed2D4.proj1.conv"
+  }
+]

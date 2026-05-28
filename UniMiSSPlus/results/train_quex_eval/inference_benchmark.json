@@ -1,0 +1,48 @@
+{
+  "pytorch": {
+    "metrics": {
+      "accuracy": 0.9586034177961108,
+      "macro_auc": 0.995026876291596,
+      "macro_ap": 0.9899621580084536
+    },
+    "speed": {
+      "timed_seconds": 10.282051463145763,
+      "timed_samples": 6532,
+      "timed_batches": 52,
+      "samples_per_second": 635.281784322207,
+      "milliseconds_per_image": 1.5741046330596697
+    },
+    "full_eval_metrics": {
+      "accuracy": 0.9586034177961108,
+      "macro_auc": 0.995026876291596,
+      "macro_ap": 0.9899621580084536
+    }
+  },
+  "onnx": {
+    "path": "/media/pc/fa8cd839-121b-4df4-9c0c-0958d9216d28/UniMiSS-code/UniMiSSPlus/results/train_quex_eval/eval.onnx",
+    "providers": [
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "metrics": {
+      "accuracy": 0.9586034177961108,
+      "macro_auc": 0.9950267630490637,
+      "macro_ap": 0.989962240585307
+    },
+    "speed": {
+      "timed_seconds": 11.020978823187761,
+      "timed_samples": 6532,
+      "timed_batches": 52,
+      "samples_per_second": 592.6878278957307,
+      "milliseconds_per_image": 1.6872288461708147
+    }
+  },
+  "comparison": {
+    "max_abs_diff": 0.000735938549041748,
+    "mean_abs_diff": 9.406810931977816e-06,
+    "prediction_agreement": 1.0,
+    "pytorch_accuracy": 0.9586034177961108,
+    "onnx_accuracy": 0.9586034177961108,
+    "accuracy_delta": 0.0
+  }
+}
