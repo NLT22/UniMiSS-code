@@ -44,7 +44,9 @@ UniMiSSPlus/data/2D_images_examples/
 UniMiSSPlus/data/3D_subvolumes_examples/
 UniMiSSPlus/pycuda_drr/build/
 
-# Downstream local datasets and generated package artifacts
+# Script/ generated label CSVs
+Script/labels_raw.csv
+Script/labels_classified.csv
 UniMiSS/Downstream/RICORD/dataset/
 UniMiSS/Downstream/BCV/dataset/
 UniMiSSPlus/Downstream/3D/RICORD/dataset/
