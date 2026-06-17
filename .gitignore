@@ -52,3 +52,6 @@ UniMiSSPlus/Downstream/3D/BCV/dataset/
 UniMiSSPlus/Downstream/3D/BCV/build/
 UniMiSSPlus/Downstream/3D/BCV/dist/
 *.egg-info/
+
+UniMiSSPlus/*.pptx
+UniMiSSPlus/dataset/
