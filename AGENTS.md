@@ -2,28 +2,39 @@
 
 ## Repo structure
 
-Three independent subprojects in one repo (no shared config):
+Two project areas remain in this repo:
 
 | Directory | Project | Tech |
 |-----------|---------|------|
-| `Script/` | DICOM analyzer/anonymizer | Python 3.10, pydicom |
-| `UniMiSS/` | UniMiSS (ECCV 2022) | PyTorch 1.7.1, CUDA 11.0, Python 3.7 |
-| `UniMiSSPlus/` | UniMiSS+ (TPAMI) | PyTorch 1.8.1, CUDA 11.1, Python 3.7 |
+| `Script/` | DICOM analyzer/anonymizer/exporter/labeler | Python 3.10, pydicom |
+| `UniMiSSPlus/` | UniMiSS+ (TPAMI) frozen reference | PyTorch 1.8.1, CUDA 11.1, Python 3.7 |
 
 No test framework, no CI, no linter config anywhere in the repo.
 
-## Script/ — DICOM analyzer (`dicom_analyzer.py`)
+## Script/ — active DICOM tooling
 
-The only actively maintained code. A standalone tool — no relation to the ML projects.
+The only actively maintained code. It prepares hospital DICOM chest CT/X-ray data for UniMiSSPlus-style upstream/domain-adaptation use and downstream X-ray-only classification.
 
-### Key behaviors (hardcoded, no CLI flags)
+Main files:
+- `dicom_analyzer.py`: analyze, anonymize, export UniMiSSPlus format, verify UniMiSSPlus export.
+- `dicom_labeler.py`: link `LABELS.xlsx` reports to DICOM studies, create weak labels, build downstream normal/abnormal lists.
+- `DICOM_README.md`: current operating notes.
+- `TRANSFER_SUMMARY.md`: current project handoff summary.
+
+### Key behaviors
 - Filters to **CHEST** or **THORAX** only (`BodyPartExamined` tag).
-- Removes only: PatientName → `ANONYMOUS`, InstitutionName → `ANONYMOUS`, InstitutionAddress, InstitutionalDepartmentName, physician tags.
-- Preserves all other tags (PatientID, dates, demographics).
+- CT scout/localizer/topogram and screenshot-derived series are skipped during export.
+- CT series are grouped by `SeriesInstanceUID`; different slice thicknesses/reconstructions are kept separate.
 - **ZIP input → ZIP output**, **folder input → folder output**.
 - ZIP files inside folders stay as ZIPs (extracted internally, re-zipped).
 - All-filtered ZIPs (no CHEST/THORAX) are **not** created.
 - Original files are never modified.
+
+### Anonymization
+- Preserve: `PatientAge`, `PatientSex`.
+- Hash linkable IDs/UIDs such as `PatientID`, `StudyID`, `AccessionNumber`, `StudyInstanceUID`, `SeriesInstanceUID`, and `SOPInstanceUID`.
+- Remove or replace direct identifiers, dates/times, patient free-text, institution/site/device fields, and physician/operator tags.
+- Pixel data with burned-in text is not modified.
 
 ### DICOM reading
 - Always try `force=False` first, fallback to `force=True` on failure.
@@ -44,25 +55,26 @@ Strips `-PatientName` suffix from **first** path component only:
 
 python Script\dicom_analyzer.py analyze <path> [--output report.json]
 python Script\dicom_analyzer.py anonymize <input> <output>
+python Script\dicom_analyzer.py export-unimissplus <input> <output_data_dir>
+python Script\dicom_analyzer.py verify-unimissplus <output_data_dir>
 ```
 
-Only dependency: `pydicom` (pre-installed in `Script/venv/`).
+Core dependency: `pydicom` (pre-installed in `Script/venv/`). Export also needs `numpy`, `Pillow`, and `nibabel`; labeling needs `openpyxl`.
 
-## UniMiSS / UniMiSSPlus — not maintained
+## UniMiSSPlus — frozen research code
 
-Both are frozen research codebases. Expect:
-- Pinned old PyTorch versions (1.7.1 / 1.8.1), Python 3.7, CUDA 11.x.
+Kept as a reference and target folder layout for exported data. Expect:
+- Pinned old PyTorch version (1.8.1), Python 3.7, CUDA 11.1.
 - No working conda envs on this machine.
 - No dataset files present (all in `.gitignore`).
 - No automated tests.
 - Pretrained weights hosted on Google Drive (links in READMEs).
 
-### Standard workflow (historical reference)
+Official DRR generation is still required before upstream pretraining:
 ```bash
-conda create -n unimiss python=3.7
-conda activate unimiss
-pip install torch==1.7.1+cu110 torchvision==0.8.2+cu110 -f https://download.pytorch.org/whl/torch_stable.html
-cd UniMiSS && sh run.sh
+cd UniMiSSPlus/pycuda_drr
+python setup.py install
+python rendering_DL.py
 ```
 
-Do not modify these unless explicitly asked — they exist for reference only.
+Do not modify `UniMiSSPlus/` unless explicitly asked; it exists for reference and later Linux/CUDA work.

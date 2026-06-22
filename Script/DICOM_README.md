@@ -132,6 +132,7 @@ Current project behavior:
 - `LABELS.xlsx` column 1 is the external study/archive id.
 - `LABELS.xlsx` column 2 is the doctor report/conclusion text.
 - `LABELS.xlsx` column 3 is optional notes.
+- Rows with an empty doctor report/conclusion are treated as default Normal samples.
 - The current label ids match ZIP filename stems, so `dicom_labeler.py` falls back from `StudyInstanceUID` matching to ZIP-stem matching.
 
 ### 2. Convert Conclusions to Weak Labels

@@ -247,7 +247,15 @@ def classify_by_rules(conclusion: str) -> dict:
     """Rule-based weak labeler for Vietnamese chest report conclusions."""
     text = normalize_text(conclusion)
     if not text:
-        return label_result("UNCERTAIN", "UNCERTAIN", [], "", 0.0, True, "empty_text")
+        return label_result(
+            "NORMAL",
+            "NORMAL",
+            ["NORMAL"],
+            "",
+            0.90,
+            False,
+            "empty_conclusion_default_normal",
+        )
 
     uncertain_phrase = contains_any(text, (
         "nghi", "theo doi", "chua loai tru", "khong loai tru", "kha nang",
