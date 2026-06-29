@@ -5,6 +5,7 @@ DICOM Patient Information Analyzer, Anonymizer, and UniMiSSPlus Exporter
 Usage:
     python dicom_analyzer.py analyze <directory> [--output report.json] [--no-recursive]
     python dicom_analyzer.py anonymize <input_dir> <output_dir>
+    python dicom_analyzer.py clean-invalid-zips <directory> [--dry-run]
     python dicom_analyzer.py export-unimissplus <input> <output_data_dir>
     python dicom_analyzer.py verify-unimissplus <output_data_dir>
 
@@ -595,6 +596,103 @@ class DICOMAnonymizer:
         print("="*80)
 
 
+class InvalidZipCleaner:
+    """Delete .zip files that cannot be opened as ZIP archives."""
+
+    def __init__(self, dry_run: bool = False):
+        self.dry_run = dry_run
+        self.stats = Counter()
+        self.deleted = []
+        self.invalid = []
+        self.valid = []
+        self.errors = []
+
+    def clean(self, input_path: str):
+        root = Path(input_path)
+        if not root.exists():
+            raise ValueError(f"Input path does not exist: {input_path}")
+
+        zip_files = self._collect_zip_files(root)
+        print(f"Scanning {len(zip_files)} ZIP file(s) under: {root}")
+        if self.dry_run:
+            print("Dry run enabled: invalid ZIP files will be reported but not deleted.")
+
+        for zip_path in zip_files:
+            self._check_and_delete(zip_path)
+
+        self._print_summary()
+        return {
+            "scanned": self.stats["scanned"],
+            "valid": self.stats["valid"],
+            "invalid": self.stats["invalid"],
+            "deleted": self.stats["deleted"],
+            "delete_failed": self.stats["delete_failed"],
+            "dry_run": self.dry_run,
+            "invalid_files": self.invalid,
+            "deleted_files": self.deleted,
+            "errors": self.errors,
+        }
+
+    def _collect_zip_files(self, root: Path):
+        if root.is_file():
+            return [root] if root.suffix.lower() == ".zip" else []
+        return sorted(path for path in root.rglob("*.zip") if path.is_file())
+
+    def _check_and_delete(self, zip_path: Path):
+        self.stats["scanned"] += 1
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.namelist()
+            self.stats["valid"] += 1
+            self.valid.append(str(zip_path))
+            return
+        except zipfile.BadZipFile as e:
+            reason = str(e) or "File is not a zip file"
+        except zipfile.LargeZipFile as e:
+            reason = str(e)
+        except OSError as e:
+            reason = str(e)
+
+        self.stats["invalid"] += 1
+        self.invalid.append(str(zip_path))
+        print(f"Invalid ZIP: {zip_path} ({reason})")
+
+        if self.dry_run:
+            return
+
+        try:
+            zip_path.unlink()
+            self.stats["deleted"] += 1
+            self.deleted.append(str(zip_path))
+            print(f"Deleted: {zip_path}")
+        except Exception as e:
+            self.stats["delete_failed"] += 1
+            self.errors.append({"file": str(zip_path), "error": str(e)})
+            print(f"Error deleting {zip_path}: {e}")
+
+    def _print_summary(self):
+        print("\n" + "="*80)
+        print("INVALID ZIP CLEANUP SUMMARY")
+        print("="*80)
+        print(f"  Scanned ZIP files: {self.stats['scanned']}")
+        print(f"  Valid ZIP files: {self.stats['valid']}")
+        print(f"  Invalid ZIP files: {self.stats['invalid']}")
+        if self.dry_run:
+            print("  Deleted files: 0 (dry run)")
+        else:
+            print(f"  Deleted files: {self.stats['deleted']}")
+        print(f"  Delete failures: {self.stats['delete_failed']}")
+        if self.invalid:
+            print("\n--- INVALID ZIP FILES (First 20) ---")
+            for path in self.invalid[:20]:
+                print(f"  {path}")
+        if self.errors:
+            print("\n--- DELETE ERRORS ---")
+            for error in self.errors[:20]:
+                print(f"  {error['file']}: {error['error']}")
+        print("="*80)
+
+
 class UniMiSSPlusExporter:
     """Export DICOM ZIP/folder data into the UniMiSSPlus upstream SSL layout.
 
@@ -1005,6 +1103,11 @@ def main():
     anon_parser.add_argument('input_dir', help='Input directory or ZIP file')
     anon_parser.add_argument('output_dir', help='Output directory or ZIP file')
 
+    clean_parser = subparsers.add_parser('clean-invalid-zips', help='Delete .zip files that are not valid ZIP archives')
+    clean_parser.add_argument('path', help='Directory or ZIP file to scan')
+    clean_parser.add_argument('--dry-run', action='store_true', help='Report invalid ZIP files without deleting them')
+    clean_parser.add_argument('--output', '-o', help='Save cleanup report to JSON file')
+
     export_parser = subparsers.add_parser('export-unimissplus', help='Export DICOM data into UniMiSSPlus upstream data format')
     export_parser.add_argument('input', help='Input directory or ZIP file containing DICOM files')
     export_parser.add_argument('output_data_dir', help='Output UniMiSSPlus data directory, e.g. UniMiSSPlus/data')
@@ -1032,6 +1135,13 @@ def main():
 
     elif args.command == 'anonymize':
         DICOMAnonymizer().anonymize_directory(args.input_dir, args.output_dir)
+
+    elif args.command == 'clean-invalid-zips':
+        report = InvalidZipCleaner(dry_run=args.dry_run).clean(args.path)
+        if args.output:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=2)
+            print(f"\nCleanup report saved to: {args.output}")
 
     elif args.command == 'export-unimissplus':
         exporter = UniMiSSPlusExporter(
