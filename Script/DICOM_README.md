@@ -141,6 +141,18 @@ Current project behavior:
 python dicom_labeler.py classify labels_raw.csv --output labels_classified.csv
 ```
 
+To classify every row in `LABELS.xlsx` without requiring a matching DICOM ZIP:
+
+```bash
+python dicom_labeler.py classify-xlsx LABELS.xlsx --output labels_all_classified.csv
+```
+
+To summarize common report phrases and export uncertain rows for manual review:
+
+```bash
+python dicom_labeler.py phrase-report labels_all_classified.csv --output-dir phrase_report
+```
+
 Default classification uses conservative Vietnamese report rules and writes:
 
 - `coarse_label`: `NORMAL`, `ABNORMAL`, or `UNCERTAIN`

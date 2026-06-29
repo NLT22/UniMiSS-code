@@ -9,6 +9,8 @@ or UniMiSSPlus downstream list files.
 Typical workflow:
     python dicom_labeler.py extract LABELS.lnk DATA --output labels_raw.csv
     python dicom_labeler.py classify labels_raw.csv --output labels_classified.csv
+    python dicom_labeler.py classify-xlsx LABELS.xlsx --output labels_all_classified.csv
+    python dicom_labeler.py phrase-report labels_all_classified.csv --output-dir phrase_report
     python dicom_labeler.py build-lists labels_classified.csv DATA ../UniMiSSPlusdata --output-dir labels
 """
 
@@ -198,6 +200,32 @@ def load_labels(xlsx_path: str) -> dict:
         notes = str(row[2]).strip() if len(row) > 2 and row[2] else ""
         if match_id:
             labels[match_id] = {"conclusion": conclusion, "notes": notes}
+    return labels
+
+
+def iter_label_rows(xlsx_path: str) -> list[dict]:
+    """Load LABELS.xlsx rows without collapsing duplicate match IDs."""
+    resolved_path = resolve_label_path(xlsx_path)
+    workbook = openpyxl.load_workbook(resolved_path, data_only=True)
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    start_idx = 1 if rows and looks_like_header(rows[0]) else 0
+
+    labels = []
+    for row_index, row in enumerate(rows[start_idx:], start=start_idx + 1):
+        if not row:
+            continue
+        match_id = str(row[0]).strip("' ") if row[0] else ""
+        conclusion = str(row[1]).strip() if len(row) > 1 and row[1] else ""
+        notes = str(row[2]).strip() if len(row) > 2 and row[2] else ""
+        if match_id:
+            labels.append({
+                "xlsx_row": str(row_index),
+                "label_match_id": match_id,
+                "conclusion_full": conclusion,
+                "conclusion": extract_conclusion(conclusion),
+                "label_notes": notes,
+            })
     return labels
 
 
@@ -523,6 +551,22 @@ def cmd_extract(args):
 
 def cmd_classify(args):
     rows = read_csv(args.input)
+    errors = classify_rows(rows, args)
+
+    preferred = (
+        "study_uid", "label_match_id", "label_match_method", "modality", "zip_path",
+        "coarse_label", "normal_abnormal_label", "normal_abnormal_class",
+        "disease_label", "multi_labels", "confidence", "needs_review", "evidence",
+        "label_source", "label_reason", "conclusion", "conclusion_full", "label_notes",
+    )
+    write_csv(args.output, rows, preferred)
+    print(f"\nSaved {len(rows)} classified entries to {args.output}")
+    print_label_counts(rows)
+    if errors:
+        print(f"Classification errors: {errors}")
+
+
+def classify_rows(rows: list[dict], args) -> int:
     api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
     if args.method == "llm" and not api_key:
         print("Error: --method llm requires OPENAI_API_KEY or --api-key.")
@@ -548,22 +592,154 @@ def cmd_classify(args):
                 f"{row['coarse_label']}/{row['disease_label']}"
             )
 
-    preferred = (
-        "study_uid", "label_match_id", "label_match_method", "modality", "zip_path",
-        "coarse_label", "normal_abnormal_label", "normal_abnormal_class",
-        "disease_label", "multi_labels", "confidence", "needs_review", "evidence",
-        "label_source", "label_reason", "conclusion", "conclusion_full", "label_notes",
-    )
-    write_csv(args.output, rows, preferred)
-    print(f"\nSaved {len(rows)} classified entries to {args.output}")
+    return errors
+
+
+def print_label_counts(rows: list[dict]):
     print("Label counts:")
     for label, count in Counter(row["coarse_label"] for row in rows).most_common():
         print(f"  {label}: {count}")
     print("Normal/Abnormal training-label counts:")
     for label, count in Counter(row["normal_abnormal_label"] for row in rows).most_common():
         print(f"  {label}: {count}")
+
+
+def cmd_classify_xlsx(args):
+    rows = iter_label_rows(args.labels)
+    print(f"Loaded {len(rows)} rows from {args.labels}")
+    empty_count = sum(1 for row in rows if not row.get("conclusion", "").strip())
+    print(f"Rows with empty conclusion defaulting to Normal: {empty_count}")
+
+    errors = classify_rows(rows, args)
+    preferred = (
+        "xlsx_row", "label_match_id",
+        "coarse_label", "normal_abnormal_label", "normal_abnormal_class",
+        "disease_label", "multi_labels", "confidence", "needs_review", "evidence",
+        "label_source", "label_reason", "conclusion", "conclusion_full", "label_notes",
+    )
+    write_csv(args.output, rows, preferred)
+    print(f"\nSaved {len(rows)} classified Excel rows to {args.output}")
+    print_label_counts(rows)
     if errors:
         print(f"Classification errors: {errors}")
+
+
+def split_phrases(value: str) -> list[str]:
+    phrases = []
+    for part in (value or "").split(";"):
+        phrase = part.strip()
+        if phrase:
+            phrases.append(phrase)
+    return phrases
+
+
+def normalized_ngrams(text: str, min_n: int = 2, max_n: int = 4) -> list[str]:
+    tokens = normalize_text(text).split()
+    stop_words = {
+        "hinh", "anh", "x", "quang", "nguc", "thang", "phim", "ct", "scanner",
+        "hai", "ben", "phoi", "truong", "va", "hoac", "la", "co", "khong",
+    }
+    tokens = [token for token in tokens if len(token) > 1 and token not in stop_words]
+    ngrams = []
+    for size in range(min_n, max_n + 1):
+        for index in range(0, max(0, len(tokens) - size + 1)):
+            ngrams.append(" ".join(tokens[index:index + size]))
+    return ngrams
+
+
+def write_counter_csv(path: Path, rows):
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("label", "phrase", "count"))
+        for label, phrase, count in rows:
+            writer.writerow((label, phrase, count))
+
+
+def top_by_label(rows: list[dict], key_fn, top_n: int):
+    counters = defaultdict(Counter)
+    for row in rows:
+        label = row.get("coarse_label", "UNKNOWN") or "UNKNOWN"
+        for key in key_fn(row):
+            counters[label][key] += 1
+
+    output = []
+    for label in sorted(counters):
+        for phrase, count in counters[label].most_common(top_n):
+            output.append((label, phrase, count))
+    return output
+
+
+def cmd_phrase_report(args):
+    rows = read_csv(args.input)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    top_n = args.top_n
+
+    uncertain_rows = [row for row in rows if row.get("coarse_label") == "UNCERTAIN"]
+    write_csv(
+        output_dir / "uncertain_samples.csv",
+        uncertain_rows,
+        (
+            "xlsx_row", "label_match_id", "label_reason", "conclusion",
+            "conclusion_full", "label_notes",
+        ),
+    )
+
+    write_counter_csv(
+        output_dir / "common_exact_conclusions.csv",
+        top_by_label(rows, lambda row: [row.get("conclusion", "").strip()] if row.get("conclusion", "").strip() else [], top_n),
+    )
+    write_counter_csv(
+        output_dir / "common_evidence_phrases.csv",
+        top_by_label(rows, lambda row: split_phrases(row.get("evidence", "")), top_n),
+    )
+    write_counter_csv(
+        output_dir / "common_normalized_ngrams.csv",
+        top_by_label(rows, lambda row: normalized_ngrams(row.get("conclusion", "")), top_n),
+    )
+
+    label_counts = Counter(row.get("coarse_label", "UNKNOWN") or "UNKNOWN" for row in rows)
+    disease_counts = Counter(row.get("disease_label", "UNKNOWN") or "UNKNOWN" for row in rows)
+    reason_counts = Counter(row.get("label_reason", "UNKNOWN") or "UNKNOWN" for row in rows)
+    empty_default_count = reason_counts.get("empty_conclusion_default_normal", 0)
+
+    markdown = []
+    markdown.append("# Report Phrase Analysis\n")
+    markdown.append("Inspired by the Vietnamese CXR report-labeling workflow in `docs/journal.pone.0276545.pdf`: normal-template filtering, keyword detection, abnormality interpolation, and manual review of unmatched text.\n")
+    markdown.append("## Summary\n")
+    markdown.append(f"- Total rows: {len(rows)}\n")
+    markdown.append(f"- Empty conclusions defaulted to Normal: {empty_default_count}\n")
+    markdown.append(f"- Uncertain rows for manual review: {len(uncertain_rows)}\n")
+    markdown.append("\n## Coarse Labels\n")
+    for label, count in label_counts.most_common():
+        markdown.append(f"- {label}: {count}\n")
+    markdown.append("\n## Disease Labels\n")
+    for label, count in disease_counts.most_common():
+        markdown.append(f"- {label}: {count}\n")
+    markdown.append("\n## Most Common Evidence Phrases\n")
+    for label, phrase, count in top_by_label(rows, lambda row: split_phrases(row.get("evidence", "")), min(top_n, 10)):
+        markdown.append(f"- {label}: `{phrase}` ({count})\n")
+    markdown.append("\n## Current Uncertain Samples\n")
+    if uncertain_rows:
+        markdown.append("| xlsx_row | label_match_id | conclusion |\n")
+        markdown.append("|---:|---|---|\n")
+        for row in uncertain_rows:
+            conclusion = " ".join((row.get("conclusion") or "").split())
+            if len(conclusion) > 180:
+                conclusion = conclusion[:177] + "..."
+            markdown.append(f"| {row.get('xlsx_row', '')} | {row.get('label_match_id', '')} | {conclusion} |\n")
+    else:
+        markdown.append("No uncertain samples.\n")
+
+    report_path = output_dir / "phrase_report.md"
+    report_path.write_text("".join(markdown), encoding="utf-8")
+
+    print(f"Saved phrase report to {report_path}")
+    print(f"Saved uncertain samples to {output_dir / 'uncertain_samples.csv'}")
+    print(f"Uncertain samples: {len(uncertain_rows)}")
+    print("Label counts:")
+    for label, count in label_counts.most_common():
+        print(f"  {label}: {count}")
 
 
 def safe_export_name(ds, fallback: str) -> str:
@@ -700,6 +876,23 @@ def main():
     )
     classify_parser.add_argument("--model", default="gpt-4o-mini", help="Model name for --method llm")
 
+    xlsx_parser = subparsers.add_parser("classify-xlsx", help="Classify every LABELS.xlsx row without DICOM matching")
+    xlsx_parser.add_argument("labels", help="Path to LABELS.xlsx or LABELS.lnk")
+    xlsx_parser.add_argument("--output", "-o", default="labels_all_classified.csv", help="Output CSV path")
+    xlsx_parser.add_argument("--method", choices=("rules", "llm"), default="rules", help="Classification method")
+    xlsx_parser.add_argument("--api-key", help="OpenAI API key for --method llm")
+    xlsx_parser.add_argument(
+        "--endpoint",
+        default="https://api.openai.com/v1/chat/completions",
+        help="OpenAI-compatible chat completions endpoint",
+    )
+    xlsx_parser.add_argument("--model", default="gpt-4o-mini", help="Model name for --method llm")
+
+    phrase_parser = subparsers.add_parser("phrase-report", help="Summarize common report phrases and uncertain rows")
+    phrase_parser.add_argument("input", help="Classified CSV from classify or classify-xlsx")
+    phrase_parser.add_argument("--output-dir", default="phrase_report", help="Directory for phrase report outputs")
+    phrase_parser.add_argument("--top-n", type=int, default=30, help="Top phrases to write per label")
+
     lists_parser = subparsers.add_parser("build-lists", help="Build normal/abnormal fixed split lists")
     lists_parser.add_argument("input", help="Classified CSV from classify")
     lists_parser.add_argument("data_dir", help="Original DATA directory containing ZIP files")
@@ -718,6 +911,10 @@ def main():
         cmd_extract(args)
     elif args.command == "classify":
         cmd_classify(args)
+    elif args.command == "classify-xlsx":
+        cmd_classify_xlsx(args)
+    elif args.command == "phrase-report":
+        cmd_phrase_report(args)
     elif args.command == "build-lists":
         cmd_build_lists(args)
 

@@ -1,0 +1,236 @@
+xlsx_row,label_match_id,label_reason,conclusion,conclusion_full,label_notes,coarse_label,normal_abnormal_label,normal_abnormal_class,disease_label,multi_labels,confidence,needs_review,evidence,label_source
+411,123.255088989375905.1861778614284584,no_clear_rule_match,Hình ảnh X – Quang ngực thẳng bóng tim không to trường phổi hai bên sáng,"MÔ TẢ HÌNH ẢNH:
+--Bóng tim không to, quai ĐMC vồng
+-- Trường phổi hai bên sáng đều không thấy nốt khu trú.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực không thấy hình ảnh bất thường
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng bóng tim không to trường phổi hai bên sáng",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+433,123.255088989375905.1865489379432575,no_clear_rule_match,"Hình ảnh xuất huyết vùng nhân xám trung ương, thái dương trái( Không thay đổi nhiều so với phim cũ) Tràn máu não thất bên 2 bên
+Dày niêm mạc, tụ dịch đa xoang.","KỸ THUẬT:Chụp CT Scanner sọ não độ dày lát cắt 5/1,25mm, tái tạo đa mặt phẳng, không tiêm thuốc cản quang.
+MÔ TẢ HÌNH ẢNH
+-- Hình ảnh ổ tổn thương tăng tỷ trọng vùng nhân xám trung ương, thái dương trái kích thước 33x54mm, viền xung quanh phù nề giảm tỷ trọng,  đè đẩy não thất bên và đường giữa lệch phải 5mm.
+-- Không thấy hình ảnh xuất huyết màng não.
+-- Tràn máu não thất bên 2 bên.
+-- Dày niêm mạc, tụ dịch xoang hàm, xoang sàng, xoang bướm 2 bên.
+-- Các xương vòm sọ và xương nền sọ không thấy bất thường.
+NHẬN XÉT KHÁC
+-- Không.
+KẾT LUẬN
+Hình ảnh xuất huyết vùng nhân xám trung ương, thái dương trái( Không thay đổi nhiều so với phim cũ) Tràn máu não thất bên 2 bên
+Dày niêm mạc, tụ dịch đa xoang.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+460,123.255088989375905.1856637709953115,no_clear_rule_match,Hình ảnh mờ nền phổi trái,"MÔ TẢ HÌNH ẢNH:
+--
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+-- Hình ảnh mờ nền phổi trái",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+489,123.255088989375905.1868248554651413,no_clear_rule_match,Hình ảnh bóng tim to.,"MÔ TẢ HÌNH ẢNH:
+--Bóng tim  to, các cung tim bình thường.
+--Trường phổi hai bên sáng đều, không thấy khối nốt khu trú.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực không thấy hình ảnh bất thường
+NHẬN XÉT KHÁC:
+-- Không
+
+KẾT LUẬN:
+--Hình ảnh bóng tim to.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+490,123.255088989375905.1865770380175376,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng bóng tim to, 2 phổi sáng.","MÔ TẢ HÌNH ẢNH:
+--Bóng tim  to, các cung tim bình thường.
+--Trường phổi hai bên sáng đều, không thấy khối nốt khu trú.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực không thấy hình ảnh bất thường
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng bóng tim to, 2 phổi sáng.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+503,123.255088989375905.1868024223227044,no_clear_rule_match,Hình ảnh X – Quang ngực thẳng: Mờ thuần nhất góc sườn hoành trái.,"MÔ TẢ HÌNH ẢNH:
+--Bóng tim không to, các cung tim bình thường.
+-- Mờ thuần nhất góc sườn hoành trái.
+--Trung thất cân đối
+--Thành ngực không thấy hình ảnh bất thường
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng: Mờ thuần nhất góc sườn hoành trái.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+508,123.255088989375905.1868021223343122,no_clear_rule_match,Hình ảnh X – Quang ngực thẳng: Gãy 1/3 ngoài xương đòn trái.,"MÔ TẢ HÌNH ẢNH:
+--Bóng tim không to, các cung tim bình thường.
+--Trường phổi hai bên sáng đều, không thấy khối nốt khu trú.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực gãy 1/3 ngoài xương đòn trái.
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng: Gãy 1/3 ngoài xương đòn trái.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+510,123.255088989375905.1865573829749103,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng Bóng tim không to, quai ĐMC vồng, trường phổi hai bên sáng đều","NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng Bóng tim không to, quai ĐMC vồng, trường phổi hai bên sáng đều",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+562,123.255088989375905.1868021667423043,no_clear_rule_match,Hình ảnh gãy rạn cung trước xương sườn 6 bên trái.,"KỸ THUẬT: Chụp CT Scanner lồng ngực, độ dày lát cắt 5/1,25mm, không tiêm thuốc cản quang.
+MÔ TẢ HÌNH ẢNH
+-- Phổi phải: nhu mô đồng nhất, không thấy khối khu trú. Không thấy tổn thương hình mờ dạng lưới, nốt. Không thấy giãn phế quản, phế nang.
+-- Phổi trái: nhu mô đồng nhất, không thấy khối khu trú. Không thấy tổn thương hình mờ dạng lưới, nốt. Không thấy giãn phế quản, phế nang.
+-- Màng phổi hai bên không thấy dày bất thường.
+-- Khoang màng phổi hai bên không thấy dịch – khí.
+-- Trung thất cân đối, không thấy hạch to hay khối choán chỗ.
+-- Gãy rạn cung trước xương sườn 6 bên trái.
+NHẬN XÉT KHÁC
+-- Không.
+KẾT LUẬN
+Hình ảnh gãy rạn cung trước xương sườn 6 bên trái.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+563,123.255088989375905.1868225204778129,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng 
+-- Trường phổi hai bên sáng đều","MÔ TẢ HÌNH ẢNH:
+--Bóng tim không to, các cung tim bình thường.
+--Trường phổi hai bên sáng đều, không thấy khối nốt khu trú.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực không thấy hình ảnh bất thường
+-- Không thấy hình ảnh gãy xương sườn trên phim Xquang.
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng 
+-- Trường phổi hai bên sáng đều",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+588,123.255088989375905.1868022591723766,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng bóng tim không to , quai động mạch vồng .","MÔ TẢ HÌNH ẢNH:
+--Bóng tim không to, quai động mạch chủ vồng
+--Trường phổi hai bên sáng đều, không thấy khối nốt khu trú.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực không thấy hình ảnh bất thường
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng bóng tim không to , quai động mạch vồng .",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+606,123.255088989375905.1854898248994967,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng: bóng tim to, hai trường phổi sáng. Góc sườn hoành phải kém nhọn.","MÔ TẢ HÌNH ẢNH:
+--
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+-- Hình ảnh X – Quang ngực thẳng: bóng tim to, hai trường phổi sáng. Góc sườn hoành phải kém nhọn.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+613,123.155145833246698.1767572820084903,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng :- Bóng tim không to, hai phổi sáng.","MÔ TẢ HÌNH ẢNH:
+--
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+-- Hình ảnh X – Quang ngực thẳng :- Bóng tim không to, hai phổi sáng.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+616,123.255088989375905.1838216840557865,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng :Bóng tim to, trường phổi hai bên sáng.","MÔ TẢ HÌNH ẢNH:
+--Bóng tim  to, các cung tim bình thường.
+--Trường phổi hai bên sáng đều, không thấy khối nốt khu trú.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực không thấy hình ảnh bất thường
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng :Bóng tim to, trường phổi hai bên sáng.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+649,123.155145833246698.1781503458209543,no_clear_rule_match,Hình ảnh X – Quang ngực thẳng: Tăng các nhánh phế huyết hai phế trường.,"MÔ TẢ HÌNH ẢNH:
+--Bóng tim không to, các cung tim bình thường.
+--Tăng các nhánh phế huyết hai phế trường.
+
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh X – Quang ngực thẳng: Tăng các nhánh phế huyết hai phế trường.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+651,123.155145833246698.1769092496178909,no_clear_rule_match,Hình ảnh Dày các nhánh phế huyết quản hai phổi.,"MÔ TẢ HÌNH ẢNH:
+--Bóng tim không to, các cung tim bình thường.
+--Dày các nhánh phế huyết quản hai phổi.
+--Trung thất cân đối
+--Không thấy tràn dịch hoặc tràn khí khoang màng phổi hai bên
+--Thành ngực không thấy hình ảnh bất thường
+
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+--Hình ảnh Dày các nhánh phế huyết quản hai phổi.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+666,1.2.840.113619.2.261.4.2147483647.1695646101.375539,no_clear_rule_match,"Hình ảnh X – Quang ngực thẳng: bóng tim không to, trường phổi 2 bên sáng.","MÔ TẢ HÌNH ẢNH:
+--
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+-- Hình ảnh X – Quang ngực thẳng: bóng tim không to, trường phổi 2 bên sáng.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+731,1.2.840.113619.2.278.3.330072048.152.1718584955.794,no_clear_rule_match,Hình ảnh kén khí thùy dưới phổi trái,"KỸ THUẬT: Chụp CT Scanner lồng ngực từ đỉnh phổi đến hết góc sườn hoành, độ dày lát cắt 5mm, trước và sau tiêm thuốc cản quang.
+MÔ TẢ HÌNH ẢNH
+--Phổi phải: nhu mô đồng nhất, không thấy khối khu trú. Không thấy tổn thương hình mờ dạng lưới, nốt. Không thấy giãn phế quản, phế nang.
+--Phổi trái: Kén khí thùy dưới phổi trái
+--Màng phổi hai bên không thấy dày bất thường.
+--Khoang màng phổi hai bên không thấy dịch – khí.
+--Trung thất cân đối, không thấy hạch to hay khối choán chỗ.
+--Xương và phần mềm thành ngực không thấy bất thường.
+
+NHẬN XÉT KHÁC
+--Không.
+
+KẾT LUẬN:
+Hình ảnh kén khí thùy dưới phổi trái",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+756,123.255088989375905.1827432422815874,no_clear_rule_match,Hình ảnh X – Quang ngực thẳng: mờ gần hoàn toàn trường phổi phải. Phổi trái sáng. Bóng tim không to,"MÔ TẢ HÌNH ẢNH:
+--
+
+NHẬN XÉT KHÁC:
+--Không.
+
+KẾT LUẬN:
+-- Hình ảnh X – Quang ngực thẳng: mờ gần hoàn toàn trường phổi phải. Phổi trái sáng. Bóng tim không to",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+789,1.2.840.113619.2.417.3.330071024.784.1781189977.597,no_clear_rule_match,Hình ảnh gãy cung trước xương sườn 5 bên phải.,"KỸ THUẬT: Chụp CT Scanner lồng ngực, độ dày lát cắt 5/1,25mm, không tiêm thuốc cản quang.
+MÔ TẢ HÌNH ẢNH
+-- Phổi phải: nhu mô đồng nhất, không thấy khối khu trú. Không thấy tổn thương hình mờ dạng lưới, nốt. Không thấy giãn phế quản, phế nang.
+-- Phổi trái: nhu mô đồng nhất, không thấy khối khu trú. Không thấy tổn thương hình mờ dạng lưới, nốt. Không thấy giãn phế quản, phế nang.
+-- Màng phổi hai bên không thấy dày bất thường.
+-- Khoang màng phổi hai bên không thấy dịch – khí.
+-- Trung thất cân đối, không thấy hạch to hay khối choán chỗ.
+-- Gãy cung trước xương sườn 5 bên phải.
+NHẬN XÉT KHÁC
+-- Không.
+KẾT LUẬN
+Hình ảnh gãy cung trước xương sườn 5 bên phải.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+790,123.255088989375905.1867894840865658,no_clear_rule_match,"Hình ảnh tràn khí khoang màng phổi.
+Các kén khí nhỏ cạnh vách vùng đỉnh phổi hai bên.","KỸ THUẬT: Chụp CT Scanner lồng ngực, độ dày lát cắt 5/1,25mm, không tiêm thuốc cản quang.
+MÔ TẢ HÌNH ẢNH
+-- Phổi 2 bên: các kén khí nhỏ cạnh vách vùng đỉnh phổi hai bên.
+-- Màng phổi hai bên không thấy dày bất thường.
+-- Tràn khí khoang màng phổi.
+-- Trung thất cân đối, không thấy hạch to hay khối choán chỗ.
+-- Xương và phần mềm thành ngực không thấy bất thường.
+NHẬN XÉT KHÁC
+-- Không.
+KẾT LUẬN
+Hình ảnh tràn khí khoang màng phổi.
+Các kén khí nhỏ cạnh vách vùng đỉnh phổi hai bên.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
+793,123.255088989375905.1867856229309247,no_clear_rule_match,"Hình ảnh vỡ lún đốt sống ngực D10, còn vững.","KỸ THUẬT: Chụp CT Scanner lồng ngực, độ dày lát cắt 5/1,25mm, không tiêm thuốc cản quang.
+MÔ TẢ HÌNH ẢNH
+-- Phổi phải: nhu mô đồng nhất, không thấy khối khu trú. Không thấy tổn thương hình mờ dạng lưới, nốt. Không thấy giãn phế quản, phế nang.
+-- Phổi trái: nhu mô đồng nhất, không thấy khối khu trú. Không thấy tổn thương hình mờ dạng lưới, nốt. Không thấy giãn phế quản, phế nang.
+-- Màng phổi hai bên không thấy dày bất thường.
+-- Khoang màng phổi hai bên không thấy dịch – khí.
+-- Trung thất cân đối, không thấy hạch to hay khối choán chỗ.
+-- Hình ảnh vỡ lún đốt sống ngực D10, còn vững.
+NHẬN XÉT KHÁC
+-- Không.
+KẾT LUẬN
+Hình ảnh vỡ lún đốt sống ngực D10, còn vững.",,UNCERTAIN,EXCLUDE,,UNCERTAIN,UNCERTAIN,0.35,yes,,rules
