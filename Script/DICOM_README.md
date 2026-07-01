@@ -34,6 +34,30 @@ python dicom_analyzer.py anonymize <input> <output>
 - **ZIP input** -> auto ZIP output with same filename
 - **ZIP files inside folders** -> preserved as ZIP files, contents anonymized
 
+### Clean Invalid ZIP Files
+
+```bash
+python dicom_analyzer.py clean-invalid-zips <directory_or_zip>
+```
+
+Deletes files ending in `.zip` that cannot actually be opened as ZIP archives. This is useful for files that produce errors like:
+
+```text
+Error reading ZIP file D:\DATA\CT\<id>.zip: File is not a zip file
+```
+
+Preview first without deleting:
+
+```bash
+python dicom_analyzer.py clean-invalid-zips <directory_or_zip> --dry-run
+```
+
+Save a cleanup report:
+
+```bash
+python dicom_analyzer.py clean-invalid-zips <directory_or_zip> --output cleanup_report.json
+```
+
 ### Export UniMiSSPlus Format
 
 ```bash
@@ -133,9 +157,46 @@ Current project behavior:
 - `LABELS.xlsx` column 2 is the doctor report/conclusion text.
 - `LABELS.xlsx` column 3 is optional notes.
 - Rows with an empty doctor report/conclusion are treated as default Normal samples.
+- Label rows whose detail text contains `CT` are treated as CT labels; all other nonempty label rows are treated as X-ray labels.
 - The current label ids match ZIP filename stems, so `dicom_labeler.py` falls back from `StudyInstanceUID` matching to ZIP-stem matching.
 
-### 2. Convert Conclusions to Weak Labels
+### 2. Check Label/Data Coverage
+
+```bash
+python dicom_labeler.py check-label-data LABELS.lnk DATA
+```
+
+Checks whether IDs mentioned in `LABELS.xlsx` exist as `<id>.zip` files in the DATA folder. This command focuses on the important direction for this project:
+
+```text
+LABELS.xlsx row -> DATA/<modality>/<id>.zip should exist
+```
+
+DATA ZIP files whose filename IDs do not appear in any `LABELS.xlsx` row are also reported by default as DATA files missing a label row. This is different from label rows with an empty detail column; empty detail rows are still valid default-normal samples.
+
+Check only one modality:
+
+```bash
+python dicom_labeler.py check-label-data LABELS.lnk DATA --modality x-ray
+python dicom_labeler.py check-label-data LABELS.lnk DATA --modality ct
+```
+
+Save CSV reports:
+
+```bash
+python dicom_labeler.py check-label-data LABELS.lnk DATA --modality x-ray --output-dir label_data_check_xray
+python dicom_labeler.py check-label-data LABELS.lnk DATA --modality ct --output-dir label_data_check_ct
+```
+
+The report includes:
+
+- label rows missing a matching DATA ZIP
+- missing label rows categorized as CT or X-ray
+- DATA ZIP files whose IDs do not appear in any label-file row
+- duplicate label IDs with Excel row numbers and text previews
+- duplicate DATA ZIP stems
+
+### 3. Convert Conclusions to Weak Labels
 
 ```bash
 python dicom_labeler.py classify labels_raw.csv --output labels_classified.csv
@@ -172,7 +233,7 @@ python dicom_labeler.py classify labels_raw.csv --method llm --output labels_cla
 
 Set `OPENAI_API_KEY` or pass `--api-key`. The LLM output is still weak labeling and should be reviewed, especially for low-confidence or uncertain rows.
 
-### 3. Build Normal/Abnormal 2D Downstream Lists
+### 4. Build Normal/Abnormal 2D Downstream Lists
 
 After exporting images with `dicom_analyzer.py export-unimissplus`, build fixed split files for a first-stage normal/abnormal 2D classification task:
 

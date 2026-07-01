@@ -8,6 +8,7 @@ or UniMiSSPlus downstream list files.
 
 Typical workflow:
     python dicom_labeler.py extract LABELS.lnk DATA --output labels_raw.csv
+    python dicom_labeler.py check-label-data LABELS.lnk DATA --output-dir label_data_check
     python dicom_labeler.py classify labels_raw.csv --output labels_classified.csv
     python dicom_labeler.py classify-xlsx LABELS.xlsx --output labels_all_classified.csv
     python dicom_labeler.py phrase-report labels_all_classified.csv --output-dir phrase_report
@@ -30,6 +31,12 @@ from collections import Counter, defaultdict
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
+
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 try:
     import pydicom
@@ -298,7 +305,7 @@ def classify_by_rules(conclusion: str) -> dict:
         ),
         "TUBERCULOSIS": ("lao", "tuberculosis", "tb phoi"),
         "PLEURAL_EFFUSION": ("tran dich mang phoi", "dich mang phoi", "day dich mang phoi"),
-        "PNEUMOTHORAX": ("tran khi mang phoi", "khi mang phoi"),
+        "PNEUMOTHORAX": ("tran khi khoang mang phoi", "tran khi mang phoi", "khi mang phoi"),
         "MASS_OR_NODULE": (
             "khoi", "u phoi", "not", "nodul", "nodule", "mass", "hamartoma",
             "di can", "ung thu", "carcinoma",
@@ -307,9 +314,14 @@ def classify_by_rules(conclusion: str) -> dict:
             "xo phoi", "xoa phoi", "day xo", "gian phe nang", "khi phe thung",
             "emphysema", "copd", "benh phoi tac nghen", "xo kem voi",
             "xo hoa", "xo rai rac", "xoa rai rac", "xo gian phe quan",
-            "gian phe quan", "dai xo", "canh xo",
+            "gian phe quan", "dai xo", "canh xo", "ken khi",
+            "ken khi thuy duoi phoi", "ken khi nho canh vach",
         ),
-        "FRACTURE": ("gay xuong", "nut xuong", "chan thuong xuong"),
+        "FRACTURE": (
+            "gay xuong", "nut xuong", "chan thuong xuong",
+            "gay 1/3 ngoai xuong don", "gay ran cung truoc xuong suon",
+            "gay cung truoc xuong suon", "vo lun dot song nguc",
+        ),
     }
     multi_labels = []
     evidence = []
@@ -336,6 +348,14 @@ def classify_by_rules(conclusion: str) -> dict:
         "dan luu", "dan luu khoang mang phoi", "mo goc suon hoanh",
         "goc suon hoanh ben trai tu", "goc suon hoanh trai tu",
         "xep nhe", "xep phoi", "dap phoi",
+        "xuat huyet vung nhan xam", "tran mau nao that",
+        "day niem mac", "tu dich da xoang", "mo nen phoi trai",
+        "bong tim to", "mo thuan nhat goc suon hoanh trai",
+        "quai dmc vong", "quai dong mach vong",
+        "goc suon hoanh phai kem nhon", "tang cac nhanh phe huyet",
+        "day cac nhanh phe huyet quan",
+        "bong tim khong to truong phoi 2 ben sang",
+        "mo gan hoan toan truong phoi phai",
     ))
     if other_abnormal_phrase and not multi_labels:
         start = text.find(other_abnormal_phrase)
@@ -350,6 +370,9 @@ def classify_by_rules(conclusion: str) -> dict:
         "khong thay hinh anh bat thuong",
         "binh thuong",
         "phoi sang deu",
+        "truong phoi hai ben sang deu",
+        "bong tim khong to truong phoi hai ben sang",
+        "bong tim khong to hai phoi sang",
         "khong thay khoi not",
     ))
 
@@ -761,6 +784,189 @@ def xray_png_paths_for_zip(zip_path: Path) -> list[str]:
     return sorted(set(paths))
 
 
+def collect_data_zip_rows(data_dir: str) -> list[dict]:
+    """Collect ZIP file stems and relative paths from DATA."""
+    root = Path(data_dir)
+    if not root.exists():
+        raise ValueError(f"DATA path does not exist: {data_dir}")
+
+    if root.is_file():
+        zip_paths = [root] if root.suffix.lower() == ".zip" else []
+    else:
+        zip_paths = sorted(path for path in root.rglob("*.zip") if path.is_file())
+
+    rows = []
+    for path in zip_paths:
+        rows.append({
+            "zip_stem": path.stem,
+            "zip_path": path.relative_to(root).as_posix() if root.is_dir() else path.name,
+            "modality_hint": path.parent.name if root.is_dir() else "",
+        })
+    return rows
+
+
+def label_row_modality(row: dict) -> str:
+    """Classify label row modality from report text convention."""
+    detail = row.get("conclusion_full", "") or ""
+    if not detail.strip():
+        return "X-ray"
+    normalized = normalize_text(detail)
+    ct_markers = (
+        "ct",
+        "clvt",
+        "cat lop vi tinh",
+        "chup cat lop",
+        "do day lat cat",
+        "tai tao da mat phang",
+        "cua so nhu mo",
+        "cua so trung that",
+        "tiem thuoc can quang",
+    )
+    return "CT" if any(marker in normalized for marker in ct_markers) else "X-ray"
+
+
+def short_text(text: str, limit: int = 140) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit - 3] + "..."
+
+
+def cmd_check_label_data(args):
+    label_rows = iter_label_rows(args.labels)
+    if args.modality != "all":
+        label_rows = [
+            row for row in label_rows
+            if label_row_modality(row).lower() == args.modality
+        ]
+    data_rows = collect_data_zip_rows(args.data_dir)
+    if args.modality != "all":
+        data_rows = [
+            row for row in data_rows
+            if row.get("modality_hint", "").lower() == args.modality
+        ]
+
+    label_counts = Counter(row["label_match_id"] for row in label_rows)
+    data_counts = Counter(row["zip_stem"] for row in data_rows)
+
+    label_rows_missing_data = [
+        {**row, "label_modality": label_row_modality(row)}
+        for row in label_rows
+        if row["label_match_id"] not in data_counts
+    ]
+    missing_by_modality = Counter(row["label_modality"] for row in label_rows_missing_data)
+
+    data_files_missing_label = [
+        row for row in data_rows
+        if row["zip_stem"] not in label_counts
+    ]
+    label_rows_by_id = defaultdict(list)
+    for row in label_rows:
+        label_rows_by_id[row["label_match_id"]].append(row)
+
+    duplicate_label_ids = []
+    duplicate_label_rows = []
+    for label_id, rows in sorted(label_rows_by_id.items()):
+        if len(rows) <= 1:
+            continue
+        duplicate_label_ids.append({"label_match_id": label_id, "count": str(len(rows))})
+        for row in rows:
+            duplicate_label_rows.append({
+                "label_match_id": label_id,
+                "duplicate_count": str(len(rows)),
+                "xlsx_row": row.get("xlsx_row", ""),
+                "label_modality": label_row_modality(row),
+                "conclusion_preview": short_text(row.get("conclusion", "") or row.get("conclusion_full", "")),
+            })
+
+    duplicate_data_stems = [
+        {"zip_stem": zip_stem, "count": str(count)}
+        for zip_stem, count in sorted(data_counts.items())
+        if count > 1
+    ]
+
+    matched_label_rows = len(label_rows) - len(label_rows_missing_data)
+
+    print("\n" + "=" * 80)
+    print("LABEL -> DATA CONSISTENCY CHECK")
+    print("=" * 80)
+    print(f"  Modality filter: {args.modality}")
+    print(f"  Label rows: {len(label_rows)}")
+    print(f"  Unique label IDs: {len(label_counts)}")
+    print(f"  DATA ZIP files: {len(data_rows)}")
+    print(f"  Unique DATA ZIP stems: {len(data_counts)}")
+    print(f"  Label rows matched to DATA: {matched_label_rows}")
+    print(f"  Label rows missing DATA ZIP: {len(label_rows_missing_data)}")
+    print(f"    Missing CT label rows: {missing_by_modality.get('CT', 0)}")
+    print(f"    Missing X-ray label rows: {missing_by_modality.get('X-ray', 0)}")
+    print(f"  Duplicate label IDs: {len(duplicate_label_ids)}")
+    print(f"  Duplicate DATA ZIP stems: {len(duplicate_data_stems)}")
+    matched_data_files = len(data_rows) - len(data_files_missing_label)
+    print(f"  DATA ZIP files matched to labels: {matched_data_files}")
+    print(f"  DATA ZIP files missing label row: {len(data_files_missing_label)}")
+
+    for modality in ("CT", "X-ray"):
+        rows = [row for row in label_rows_missing_data if row["label_modality"] == modality]
+        if rows:
+            print(f"\n--- Label rows missing DATA ZIP: {modality} (first 20) ---")
+            for row in rows[:20]:
+                print(f"  {row.get('label_match_id', '')}")
+
+    if data_files_missing_label:
+        print("\n--- DATA ZIP files missing label row (first 20) ---")
+        for row in data_files_missing_label[:20]:
+            print(f"  {row.get('zip_path', '')}")
+
+    if duplicate_label_rows:
+        print("\n--- Duplicate label ID details (first 20 rows) ---")
+        for row in duplicate_label_rows[:20]:
+            print(
+                f"  {row.get('label_match_id', '')} | "
+                f"xlsx_row={row.get('xlsx_row', '')} | "
+                f"{row.get('label_modality', '')} | "
+                f"{row.get('conclusion_preview', '')}"
+            )
+
+    if duplicate_data_stems:
+        print("\n--- Duplicate DATA ZIP stems (first 20) ---")
+        for row in duplicate_data_stems[:20]:
+            print(f"  {row.get('zip_stem', '')}")
+
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_csv(output_dir / "label_rows_missing_data.csv", label_rows_missing_data)
+        write_csv(
+            output_dir / "label_rows_missing_data_ct.csv",
+            [row for row in label_rows_missing_data if row["label_modality"] == "CT"],
+        )
+        write_csv(
+            output_dir / "label_rows_missing_data_xray.csv",
+            [row for row in label_rows_missing_data if row["label_modality"] == "X-ray"],
+        )
+        write_csv(output_dir / "data_files_missing_label.csv", data_files_missing_label)
+        write_csv(output_dir / "duplicate_label_ids.csv", duplicate_label_ids)
+        write_csv(output_dir / "duplicate_label_rows.csv", duplicate_label_rows)
+        write_csv(output_dir / "duplicate_data_stems.csv", duplicate_data_stems)
+        write_csv(output_dir / "summary.csv", [{
+            "modality_filter": args.modality,
+            "label_rows": str(len(label_rows)),
+            "unique_label_ids": str(len(label_counts)),
+            "data_zip_files": str(len(data_rows)),
+            "unique_data_zip_stems": str(len(data_counts)),
+            "label_rows_matched_to_data": str(matched_label_rows),
+            "label_rows_missing_data_zip": str(len(label_rows_missing_data)),
+            "label_rows_missing_data_zip_ct": str(missing_by_modality.get("CT", 0)),
+            "label_rows_missing_data_zip_xray": str(missing_by_modality.get("X-ray", 0)),
+            "data_zip_files_missing_label_row": str(len(data_files_missing_label)),
+            "duplicate_label_ids": str(len(duplicate_label_ids)),
+            "duplicate_data_zip_stems": str(len(duplicate_data_stems)),
+        }])
+        print(f"\nCSV reports saved to: {output_dir}")
+
+    print("=" * 80)
+
+
 def split_studies(rows: list[dict], test_fraction: float, seed: int):
     by_study = defaultdict(list)
     for row in rows:
@@ -864,6 +1070,16 @@ def main():
     extract_parser.add_argument("data_dir", help="Path to DATA directory containing ZIP files")
     extract_parser.add_argument("--output", "-o", default="labels_raw.csv", help="Output CSV path")
 
+    check_parser = subparsers.add_parser("check-label-data", help="Compare LABELS.xlsx IDs with DATA ZIP filenames")
+    check_parser.add_argument("labels", help="Path to LABELS.xlsx or LABELS.lnk")
+    check_parser.add_argument("data_dir", help="Path to DATA directory containing ZIP files")
+    check_parser.add_argument("--output-dir", help="Directory for CSV mismatch reports")
+    check_parser.add_argument(
+        "--modality",
+        choices=("all", "x-ray", "ct"),
+        default="all",
+        help="Check only labels/DATA files for one modality",
+    )
     classify_parser = subparsers.add_parser("classify", help="Convert conclusions to weak labels")
     classify_parser.add_argument("input", help="Input CSV from extract")
     classify_parser.add_argument("--output", "-o", default="labels_classified.csv", help="Output CSV path")
@@ -909,6 +1125,8 @@ def main():
 
     if args.command == "extract":
         cmd_extract(args)
+    elif args.command == "check-label-data":
+        cmd_check_label_data(args)
     elif args.command == "classify":
         cmd_classify(args)
     elif args.command == "classify-xlsx":
