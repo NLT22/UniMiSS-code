@@ -259,6 +259,164 @@ List format:
 
 The split is study-level, not image-level, to reduce data leakage.
 
+### 5. Build Stratified Grouped 5-Fold CV Lists
+
+For the main Vietnamese X-ray study, use cross-validation instead of one fixed split:
+
+```bash
+python dicom_labeler.py build-cv-lists labels_all_classified.csv DATA <UniMiSSPlus_data_dir> --output-dir labels/vietnam_xray_cv
+```
+
+Default behavior:
+
+- Builds `fold_0` through `fold_4`.
+- Groups by `label_match_id`, so one study/archive ID does not appear in train and test in the same fold.
+- Stratifies by `Normal` / `Abnormal` as much as possible while preserving groups.
+- Uses only X-ray rows for this downstream task; CT rows are excluded.
+- Excludes `UNCERTAIN`, `EXCLUDE`, and `needs_review=yes` rows unless `--include-review` is explicitly used.
+- Repeats Abnormal rows 3x in `train_oversampled.txt` only.
+- Keeps `val.txt` and `test.txt` natural, without oversampling.
+
+Output:
+
+```text
+labels/vietnam_xray_cv/
+  cv_manifest.csv
+  cv_split_summary.csv
+  fold_0/
+    train.txt
+    train_oversampled.txt
+    val.txt
+    test.txt
+  ...
+  fold_4/
+    train.txt
+    train_oversampled.txt
+    val.txt
+    test.txt
+```
+
+List label mapping remains:
+
+```text
+2D_images/<image>.png 0   # Abnormal, positive class for evaluation
+2D_images/<image>.png 1   # Normal
+```
+
+Optional controls:
+
+```bash
+python dicom_labeler.py build-cv-lists labels_all_classified.csv DATA <UniMiSSPlus_data_dir> \
+  --folds 5 \
+  --val-fraction 0.15 \
+  --abnormal-repeat 3 \
+  --seed 2026 \
+  --output-dir labels/vietnam_xray_cv
+```
+
+### 6. Evaluate Pretrained Frozen Features
+
+Use this path for a fast comparison study without random CNN initialization. The models are public pretrained encoders; only a logistic-regression classifier is fitted inside each fold.
+
+Recommended Linux GPU environment for RTX 5060 Ti 16GB:
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install scikit-learn matplotlib pillow numpy torchxrayvision transformers
+```
+
+Optional MedSigLIP baseline:
+
+```bash
+pip install transformers
+```
+
+Run the default pretrained-feature comparison:
+
+```bash
+python eval_pretrained_features.py \
+  --data-root <UniMiSSPlus_data_dir> \
+  --cv-dir labels/vietnam_xray_cv \
+  --output-dir results/pretrained_feature_eval \
+  --device auto \
+  --batch-size 32
+```
+
+Default methods:
+
+- `rad_dino`: recent CXR/biomedical self-supervised vision encoder from Microsoft.
+- `torchxrayvision_densenet121`: CXR-specific DenseNet121 pretrained through TorchXRayVision.
+- `imagenet_densenet121`: ImageNet DenseNet121 generic baseline.
+- `imagenet_resnet50`: ImageNet ResNet50 generic baseline.
+
+The ImageNet and TorchXRayVision methods are kept as comparison baselines, not as claims of current SOTA. The modern frozen-feature comparison should include `rad_dino`; if setup time allows, also consider CXR Foundation / MedImageInsight outside this script.
+
+UniMiSSPlus fine-tuning is still the main project method, but use the same fold structure carefully: `train.txt` or `train_oversampled.txt` for optimization, `val.txt` for epoch/model selection, and `test.txt` only once for final fold reporting. Do not select the best epoch using the test fold.
+
+Optional method list:
+
+```bash
+python eval_pretrained_features.py \
+  --data-root <UniMiSSPlus_data_dir> \
+  --cv-dir labels/vietnam_xray_cv \
+  --methods rad_dino,torchxrayvision_densenet121,imagenet_densenet121,imagenet_resnet50,medsiglip \
+  --output-dir results/pretrained_feature_eval
+```
+
+Output:
+
+```text
+results/pretrained_feature_eval/
+  feature_eval_metrics.csv
+  feature_eval_predictions.csv
+  feature_eval_run.json
+  feature_cache/*.npz
+```
+
+Important evaluation details:
+
+- Abnormal is treated as the positive class.
+- `train_oversampled.txt` is used by default for classifier fitting.
+- Validation selects the logistic-regression `C` value.
+- Test folds are never oversampled.
+- Primary metrics are AUC, average precision, balanced accuracy, Abnormal recall, and Normal specificity.
+- Do not report accuracy alone because the Normal/Abnormal dataset is imbalanced.
+
+Summarize results:
+
+```bash
+python summarize_cv_results.py \
+  --metrics results/pretrained_feature_eval/feature_eval_metrics.csv \
+  --predictions results/pretrained_feature_eval/feature_eval_predictions.csv \
+  --output-dir results/cv_summary
+```
+
+Summary output:
+
+```text
+results/cv_summary/
+  cv_summary.csv
+  cv_summary.md
+  pooled_predictions.csv
+  pooled_confusion_matrices.csv
+  pooled_roc.png
+  pooled_pr.png
+```
+
+Every method in the final table must have a citation entry in `study_references.md`.
+
+### 7. CT / DRR Extension
+
+CT is not used for the first downstream X-ray-only Normal/Abnormal claim. Keep CT as an extension:
+
+- Export CT into 24-slice subvolumes with `export-unimissplus`.
+- Generate official DRR PNGs with `UniMiSSPlus/pycuda_drr/rendering_DL.py`.
+- Verify every CT subvolume has a paired DRR PNG with `verify-unimissplus`.
+- Later compare X-ray-only training against X-ray plus CT-derived DRR augmentation.
+- Do not claim CT improves performance unless patient/study leakage is controlled across all real X-ray and CT-derived DRR data.
+
 ## What is Removed / Replaced
 
 | Tag | Action |

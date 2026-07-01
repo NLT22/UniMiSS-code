@@ -13,6 +13,7 @@ Typical workflow:
     python dicom_labeler.py classify-xlsx LABELS.xlsx --output labels_all_classified.csv
     python dicom_labeler.py phrase-report labels_all_classified.csv --output-dir phrase_report
     python dicom_labeler.py build-lists labels_classified.csv DATA ../UniMiSSPlusdata --output-dir labels
+    python dicom_labeler.py build-cv-lists labels_all_classified.csv DATA ../UniMiSSPlusdata --output-dir labels/vietnam_xray_cv
 """
 
 import argparse
@@ -998,28 +999,77 @@ def write_labeled_list(path: Path, rows: list[dict]):
     path.write_text("".join(sorted(lines)), encoding="utf-8")
 
 
-def cmd_build_lists(args):
-    rows = read_csv(args.input)
-    data_dir = Path(args.data_dir)
-    unimiss_data_dir = Path(args.unimissplus_data_dir)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+def data_zip_index(data_dir: Path) -> dict[str, list[Path]]:
+    """Index DATA zip files by filename stem for LABELS.xlsx row matching."""
+    index = defaultdict(list)
+    if data_dir.is_file() and data_dir.suffix.lower() == ".zip":
+        index[data_dir.stem].append(data_dir)
+        return index
+    for path in sorted(data_dir.rglob("*.zip")):
+        if path.is_file():
+            index[path.stem].append(path)
+    return index
 
+
+def preferred_xray_zip(candidates: list[Path]) -> tuple[Path | None, str]:
+    """Pick a unique X-ray-looking ZIP path, or return a skip reason."""
+    if not candidates:
+        return None, "missing_zip"
+    xray_candidates = [
+        path for path in candidates
+        if any(token in path.parent.name.lower() for token in ("x-ray", "xray", "x_ray"))
+    ]
+    if len(xray_candidates) == 1:
+        return xray_candidates[0], ""
+    if len(xray_candidates) > 1:
+        return None, "duplicate_xray_zip_stem"
+    if len(candidates) == 1:
+        return candidates[0], ""
+    return None, "ambiguous_zip_stem"
+
+
+def resolve_label_zip_path(row: dict, data_dir: Path, index: dict[str, list[Path]]) -> tuple[Path | None, str]:
+    """Resolve an extracted/classified row to a DATA zip path."""
+    zip_path_text = row.get("zip_path", "")
+    if zip_path_text:
+        zip_path = data_dir / zip_path_text
+        if zip_path.is_file():
+            return zip_path, ""
+
+    match_id = row.get("label_match_id", "") or row.get("study_uid", "")
+    if not match_id:
+        return None, "missing_label_match_id"
+    return preferred_xray_zip(index.get(match_id, []))
+
+
+def collect_normal_abnormal_xray_samples(
+    rows: list[dict],
+    data_dir: Path,
+    unimiss_data_dir: Path,
+    include_review: bool = False,
+) -> tuple[list[dict], Counter]:
+    """Collect exported X-ray PNG samples with Normal/Abnormal weak labels."""
+    zip_index = data_zip_index(data_dir)
     samples = []
     skipped = Counter()
+
     for row in rows:
+        if label_row_modality(row) != "X-ray":
+            skipped["ct_label_row"] += 1
+            continue
+
         label = row.get("normal_abnormal_label", "")
         class_id = row.get("normal_abnormal_class", "")
         if label == "EXCLUDE" or class_id == "":
             skipped["excluded_label"] += 1
             continue
-        if row.get("needs_review") == "yes" and not args.include_review:
+        if row.get("needs_review") == "yes" and not include_review:
             skipped["needs_review"] += 1
             continue
 
-        zip_path = data_dir / row.get("zip_path", "")
-        if not zip_path.is_file():
-            skipped["missing_zip"] += 1
+        zip_path, reason = resolve_label_zip_path(row, data_dir, zip_index)
+        if not zip_path:
+            skipped[reason] += 1
             continue
 
         rel_pngs = xray_png_paths_for_zip(zip_path)
@@ -1033,7 +1083,143 @@ def cmd_build_lists(args):
                 continue
             sample = dict(row)
             sample["image_path"] = rel_png
+            sample["zip_path"] = str(zip_path.relative_to(data_dir)) if zip_path.is_relative_to(data_dir) else str(zip_path)
+            sample["cv_group"] = sample.get("label_match_id") or sample.get("study_uid") or zip_path.stem
             samples.append(sample)
+
+    return samples, skipped
+
+
+def class_counts(rows: list[dict]) -> Counter:
+    return Counter(row.get("normal_abnormal_label", "") for row in rows)
+
+
+def grouped_samples(samples: list[dict]) -> list[dict]:
+    by_group = defaultdict(list)
+    for sample in samples:
+        by_group[sample["cv_group"]].append(sample)
+
+    groups = []
+    for key, rows in by_group.items():
+        label_counts = Counter(row["normal_abnormal_class"] for row in rows)
+        label = sorted(label_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        groups.append({
+            "key": key,
+            "rows": rows,
+            "label": label,
+            "size": len(rows),
+            "mixed_labels": "yes" if len(label_counts) > 1 else "no",
+        })
+    return groups
+
+
+def stratified_group_folds(samples: list[dict], folds: int, seed: int) -> list[list[dict]]:
+    if folds < 2:
+        raise ValueError("--folds must be at least 2")
+
+    groups_by_label = defaultdict(list)
+    rng = random.Random(seed)
+    for group in grouped_samples(samples):
+        groups_by_label[group["label"]].append(group)
+
+    fold_groups = [[] for _ in range(folds)]
+    fold_class_counts = [Counter() for _ in range(folds)]
+    fold_total_counts = [0 for _ in range(folds)]
+
+    for label, groups in sorted(groups_by_label.items()):
+        rng.shuffle(groups)
+        groups.sort(key=lambda group: (-group["size"], group["key"]))
+        for group in groups:
+            target = min(
+                range(folds),
+                key=lambda idx: (fold_class_counts[idx][label], fold_total_counts[idx], idx),
+            )
+            fold_groups[target].append(group)
+            fold_class_counts[target][label] += group["size"]
+            fold_total_counts[target] += group["size"]
+
+    return [[row for group in groups for row in group["rows"]] for groups in fold_groups]
+
+
+def stratified_group_validation_split(train_pool: list[dict], val_fraction: float, seed: int) -> tuple[list[dict], list[dict]]:
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError("--val-fraction must be between 0 and 1")
+
+    groups_by_label = defaultdict(list)
+    rng = random.Random(seed)
+    for group in grouped_samples(train_pool):
+        groups_by_label[group["label"]].append(group)
+
+    val_group_keys = set()
+    for label, groups in groups_by_label.items():
+        rng.shuffle(groups)
+        total = sum(group["size"] for group in groups)
+        target = max(1, int(round(total * val_fraction))) if total else 0
+        selected = 0
+        for group in sorted(groups, key=lambda group: (group["size"], group["key"])):
+            if selected >= target:
+                break
+            val_group_keys.add(group["key"])
+            selected += group["size"]
+
+    train_rows = []
+    val_rows = []
+    for group in grouped_samples(train_pool):
+        if group["key"] in val_group_keys:
+            val_rows.extend(group["rows"])
+        else:
+            train_rows.extend(group["rows"])
+    return train_rows, val_rows
+
+
+def oversample_abnormal(rows: list[dict], repeat: int) -> list[dict]:
+    if repeat < 1:
+        raise ValueError("--abnormal-repeat must be at least 1")
+    output = []
+    for row in rows:
+        times = repeat if row.get("normal_abnormal_class") == "0" else 1
+        output.extend([row] * times)
+    return output
+
+
+def write_split_summary(path: Path, fold_rows: list[dict]):
+    preferred = (
+        "fold", "split", "samples", "groups", "normal", "abnormal",
+        "class_0_abnormal", "class_1_normal", "mixed_label_groups",
+    )
+    write_csv(path, fold_rows, preferred)
+
+
+def split_summary_row(fold: int, split: str, rows: list[dict]) -> dict:
+    groups = grouped_samples(rows)
+    counts = Counter(row.get("normal_abnormal_class", "") for row in rows)
+    label_counts = class_counts(rows)
+    return {
+        "fold": str(fold),
+        "split": split,
+        "samples": str(len(rows)),
+        "groups": str(len(groups)),
+        "normal": str(label_counts.get("Normal", 0)),
+        "abnormal": str(label_counts.get("Abnormal", 0)),
+        "class_0_abnormal": str(counts.get("0", 0)),
+        "class_1_normal": str(counts.get("1", 0)),
+        "mixed_label_groups": str(sum(1 for group in groups if group["mixed_labels"] == "yes")),
+    }
+
+
+def cmd_build_lists(args):
+    rows = read_csv(args.input)
+    data_dir = Path(args.data_dir)
+    unimiss_data_dir = Path(args.unimissplus_data_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    samples, skipped = collect_normal_abnormal_xray_samples(
+        rows,
+        data_dir,
+        unimiss_data_dir,
+        include_review=args.include_review,
+    )
 
     train_rows, test_rows = split_studies(samples, args.test_fraction, args.seed)
     train_path = output_dir / "normal_abnormal_train.txt"
@@ -1055,6 +1241,85 @@ def cmd_build_lists(args):
     print("Sample class counts:")
     for label, count in Counter(row["normal_abnormal_label"] for row in samples).most_common():
         print(f"  {label}: {count}")
+    if skipped:
+        print("Skipped:")
+        for reason, count in skipped.most_common():
+            print(f"  {reason}: {count}")
+
+
+def cmd_build_cv_lists(args):
+    rows = read_csv(args.input)
+    data_dir = Path(args.data_dir)
+    unimiss_data_dir = Path(args.unimissplus_data_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    samples, skipped = collect_normal_abnormal_xray_samples(
+        rows,
+        data_dir,
+        unimiss_data_dir,
+        include_review=args.include_review,
+    )
+    if not samples:
+        raise ValueError("No eligible exported X-ray samples found. Check DATA path and UniMiSSPlus export path.")
+
+    folds = stratified_group_folds(samples, args.folds, args.seed)
+    summary_rows = []
+    manifest_rows = []
+    preferred_manifest = (
+        "fold", "split", "image_path", "normal_abnormal_label", "normal_abnormal_class",
+        "label_match_id", "cv_group", "zip_path", "coarse_label", "disease_label",
+        "confidence", "needs_review", "evidence", "conclusion",
+    )
+
+    for fold_idx in range(args.folds):
+        fold_dir = output_dir / f"fold_{fold_idx}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+
+        test_rows = folds[fold_idx]
+        train_pool = [row for idx, fold_rows in enumerate(folds) if idx != fold_idx for row in fold_rows]
+        train_rows, val_rows = stratified_group_validation_split(
+            train_pool,
+            args.val_fraction,
+            args.seed + fold_idx + 1,
+        )
+        train_oversampled_rows = oversample_abnormal(train_rows, args.abnormal_repeat)
+
+        write_labeled_list(fold_dir / "train.txt", train_rows)
+        write_labeled_list(fold_dir / "train_oversampled.txt", train_oversampled_rows)
+        write_labeled_list(fold_dir / "val.txt", val_rows)
+        write_labeled_list(fold_dir / "test.txt", test_rows)
+
+        summary_rows.extend([
+            split_summary_row(fold_idx, "train", train_rows),
+            split_summary_row(fold_idx, "train_oversampled", train_oversampled_rows),
+            split_summary_row(fold_idx, "val", val_rows),
+            split_summary_row(fold_idx, "test", test_rows),
+        ])
+
+        for split_name, split_rows in (
+            ("train", train_rows),
+            ("val", val_rows),
+            ("test", test_rows),
+        ):
+            for row in split_rows:
+                manifest_row = dict(row)
+                manifest_row["fold"] = str(fold_idx)
+                manifest_row["split"] = split_name
+                manifest_rows.append(manifest_row)
+
+    write_split_summary(output_dir / "cv_split_summary.csv", summary_rows)
+    write_csv(output_dir / "cv_manifest.csv", manifest_rows, preferred_manifest)
+
+    print(f"Saved {args.folds}-fold CV lists to {output_dir}")
+    print(f"Eligible samples: {len(samples)}")
+    print("Eligible class counts:")
+    for label, count in class_counts(samples).most_common():
+        print(f"  {label}: {count}")
+    print("Split summary saved to:")
+    print(f"  {output_dir / 'cv_split_summary.csv'}")
+    print(f"Manifest saved to:")
+    print(f"  {output_dir / 'cv_manifest.csv'}")
     if skipped:
         print("Skipped:")
         for reason, count in skipped.most_common():
@@ -1118,6 +1383,34 @@ def main():
     lists_parser.add_argument("--seed", type=int, default=1234, help="Study-level split seed")
     lists_parser.add_argument("--include-review", action="store_true", help="Include rows flagged needs_review=yes")
 
+    cv_parser = subparsers.add_parser(
+        "build-cv-lists",
+        help="Build stratified grouped k-fold normal/abnormal lists",
+    )
+    cv_parser.add_argument("input", help="Classified CSV from classify or classify-xlsx")
+    cv_parser.add_argument("data_dir", help="Original DATA directory containing ZIP files")
+    cv_parser.add_argument("unimissplus_data_dir", help="Directory containing exported 2D_images/")
+    cv_parser.add_argument(
+        "--output-dir",
+        default="labels/vietnam_xray_cv",
+        help="Directory for generated fold list files",
+    )
+    cv_parser.add_argument("--folds", type=int, default=5, help="Number of CV folds")
+    cv_parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=0.15,
+        help="Validation fraction taken from each non-test training pool",
+    )
+    cv_parser.add_argument(
+        "--abnormal-repeat",
+        type=int,
+        default=3,
+        help="Total repetitions for Abnormal rows in train_oversampled.txt",
+    )
+    cv_parser.add_argument("--seed", type=int, default=2026, help="Grouped CV split seed")
+    cv_parser.add_argument("--include-review", action="store_true", help="Include rows flagged needs_review=yes")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -1135,6 +1428,8 @@ def main():
         cmd_phrase_report(args)
     elif args.command == "build-lists":
         cmd_build_lists(args)
+    elif args.command == "build-cv-lists":
+        cmd_build_cv_lists(args)
 
 
 if __name__ == "__main__":
