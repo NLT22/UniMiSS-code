@@ -11,6 +11,7 @@ Typical workflow:
     python dicom_labeler.py check-label-data LABELS.lnk DATA --output-dir label_data_check
     python dicom_labeler.py classify labels_raw.csv --output labels_classified.csv
     python dicom_labeler.py classify-xlsx LABELS.xlsx --output labels_all_classified.csv
+    python dicom_labeler.py label-xlsx LABELS.xlsx
     python dicom_labeler.py phrase-report labels_all_classified.csv --output-dir phrase_report
     python dicom_labeler.py build-lists labels_classified.csv DATA ../UniMiSSPlusdata --output-dir labels
     python dicom_labeler.py build-cv-lists labels_all_classified.csv DATA ../UniMiSSPlusdata --output-dir labels/vietnam_xray_cv
@@ -50,7 +51,6 @@ try:
 except ImportError:
     print("Error: openpyxl not installed. Run: pip install openpyxl")
     sys.exit(1)
-
 
 COARSE_LABELS = ("NORMAL", "ABNORMAL", "UNCERTAIN")
 DISEASE_LABELS = (
@@ -96,30 +96,11 @@ def strip_accents(text: str) -> str:
 
 
 def normalize_text(text: str) -> str:
-    text = strip_accents(text or "").lower()
+    text = (text or "").replace("Đ", "D").replace("đ", "d")
+    text = strip_accents(text).lower()
     text = text.replace("đ", "d")
     text = re.sub(r"[^a-z0-9.+/ -]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
-
-
-def contains_any(text: str, phrases) -> str:
-    for phrase in phrases:
-        if phrase in text:
-            return phrase
-    return ""
-
-
-def is_negated_finding(text: str, start: int) -> bool:
-    """Return True only when a finding is directly negated near its phrase."""
-    before = text[max(0, start - 35):start].strip()
-    negation_patterns = (
-        "khong thay",
-        "khong co",
-        "chua thay",
-        "khong phat hien",
-        "khong ghi nhan",
-    )
-    return any(before.endswith(pattern) for pattern in negation_patterns)
 
 
 def extract_conclusion(raw_text: str) -> str:
@@ -187,8 +168,15 @@ def looks_like_header(row) -> bool:
     second = str(row[1] or "").strip().lower() if len(row) > 1 else ""
     if re.fullmatch(r"[0-9.]+", first):
         return False
-    header_words = ("study", "uid", "conclusion", "report", "label")
-    return any(word in first for word in header_words) or any(word in second for word in header_words)
+    first_normalized = normalize_text(first)
+    second_normalized = normalize_text(second)
+    first_headers = {"id", "match id", "label match id", "study id", "study uid", "uid"}
+    header_words = ("study", "uid", "conclusion", "report", "label", "detail", "mo ta", "ket luan")
+    return (
+        first_normalized in first_headers
+        or any(word in first_normalized for word in header_words)
+        or any(word in second_normalized for word in header_words)
+    )
 
 
 def load_labels(xlsx_path: str) -> dict:
@@ -233,6 +221,7 @@ def iter_label_rows(xlsx_path: str) -> list[dict]:
                 "conclusion_full": conclusion,
                 "conclusion": extract_conclusion(conclusion),
                 "label_notes": notes,
+                "modality": label_row_modality({"conclusion_full": conclusion}),
             })
     return labels
 
@@ -279,9 +268,107 @@ def get_modality_from_zip(zip_path: Path) -> str:
     return str(modality) if modality else "UNKNOWN"
 
 
+NORMAL_CONCLUSION_PATTERNS = (
+    "hinh anh x quang nguc thang khong thay bat thuong",
+    "hinh anh ct-scanner long nguc hien tai khong thay bat thuong",
+    "hinh anh x quang nguc thang nghieng khong thay bat thuong",
+    "hinh anh chup cat lop vi tinh ctscan phoi va long nguc hien khong thay bat thuong",
+    "hinh anh x quang nguc thang khong thay bat thuong con shilley khi quan",
+    "hinh anh x quang nguc thang bong tim khong to truong phoi hai ben sang",
+    "hinh anh x quang nguc thang - bong tim khong to hai phoi sang",
+    "hinh anh x quang nguc thang -- truong phoi hai ben sang deu",
+    "hinh anh x quang nguc thang bong tim khong to truong phoi 2 ben sang",
+    "hinh anh x quang nguc thang truong phoi hai ben sang deu",
+    "hinh anh x quang nguc thang bong tim khong to hai phoi sang",
+    "hinh anh tim be that trai hai phoi binh thuong",
+    "hinh anh ct-scanner long nguc do phan giai cao hien tai khong thay bat thuong",
+)
+
+NORMAL_CONTAINS_PATTERNS = (
+    "hinh anh ct-scanner long nguc hien tai khong thay bat thuong gian dai be than",
+    "thoai hoa cot song co hinh anh x-quang nguc thang khong thay bat thuong",
+    "hinh anh x quang nguc thang khong thay bat thuong con shilley khi quan",
+    "con hinh anh thiet bi tao nhip thanh nguc trai",
+    "truong phoi hai ben sang deu",
+    "hai phoi binh thuong",
+)
+
+ABNORMAL_CONTAINS_PATTERNS = (
+    ("fibrosis/atelectasis/bronchiectasis", ("xo", "xep", "gian phe quan")),
+    ("opacity/mass shadow", ("mo", "dam mo")),
+    ("pleural effusion", ("tran dich",)),
+    ("pneumothorax", ("tran khi",)),
+    ("inflammation", ("viem",)),
+    ("fracture", ("gay",)),
+    ("enlarged heart", ("bong tim to", "tim to")),
+    ("bronchial/peribronchial abnormality", (
+        "phe huyet quan",
+        "phe quan",
+        "day thanh phe quan",
+        "day cac nhanh phe huyet",
+        "tang cac nhanh phe huyet",
+        "tang dam nhanh phe quan",
+        "tang dam cac nhanh phe quan",
+        "tang dam nhanh phe huyet",
+    )),
+    ("catheter", ("cathete", "catheter")),
+    ("pleural thickening/adhesion", ("day dinh mang phoi", "day mang phoi", "day thanh mang phoi", "dinh nhe mang phoi")),
+    ("interstitial thickening", ("day to chuc ke", "day ke")),
+    ("blunted costophrenic angle", ("goc suon hoanh ben trai tu", "goc suon hoanh tu")),
+    ("hemorrhage", ("xuat huyet",)),
+    ("sinus mucosal thickening/fluid", ("day niem mac", "tu dich")),
+    ("lesion", ("ton thuong",)),
+    ("solid nodule/tumor/cavity/tuberculosis", ("not dac", "u thuy", "u phoi", "hang phoi", "lao")),
+    ("node/mediastinum", ("hach trung that", "rong trung that")),
+    ("prominent left hilum", ("ron phoi trai dam",)),
+    ("calcified dense nodule", ("not dam do voi",)),
+    ("emphysema/air cyst", ("khi phe thung", "ken khi")),
+    ("compression fracture", ("vo lun",)),
+    ("soft tissue edema", ("phu ne",)),
+)
+
+AORTA_CONTAINS_PATTERNS = (
+    "quai dong mach chu",
+    "cung dong mach chu",
+    "quai dmc",
+    "quai dong mach",
+)
+
+
+def has_term(text: str, term: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
+
+
+def find_approved_normal_contains(text: str) -> str:
+    comparable_text = re.sub(r"[.:-]+", " ", text)
+    comparable_text = re.sub(r"\s+", " ", comparable_text).strip()
+    for normal_phrase in NORMAL_CONTAINS_PATTERNS:
+        comparable_phrase = re.sub(r"[.:-]+", " ", normal_phrase)
+        comparable_phrase = re.sub(r"\s+", " ", comparable_phrase).strip()
+        if normal_phrase in text or comparable_phrase in comparable_text:
+            return normal_phrase
+    return ""
+
+
+def find_approved_abnormal_contains(text: str) -> tuple[str, str]:
+    if "vong" in text and any(term in text for term in AORTA_CONTAINS_PATTERNS):
+        return "quai/cung dong mach chu + vong", "quai/cung dong mach chu with vong"
+    if "voi hoa" in text and "quai dong mach chu" in text and (
+        "day" in text or "mang phoi" in text
+    ):
+        return "voi hoa quai dong mach chu + pleural/thickening finding", "aorta calcification plus pleural/thickening finding"
+    if "quai dong mach chu voi hoa" in text:
+        return "quai dong mach chu voi hoa", "aorta calcification"
+    for evidence_label, terms in ABNORMAL_CONTAINS_PATTERNS:
+        for term in terms:
+            if has_term(text, term):
+                return term, evidence_label
+    return "", ""
+
+
 def classify_by_rules(conclusion: str) -> dict:
-    """Rule-based weak labeler for Vietnamese chest report conclusions."""
-    text = normalize_text(conclusion)
+    """Minimal rebuilt classifier for explicitly approved normal conclusions."""
+    text = normalize_text(extract_conclusion(conclusion))
     if not text:
         return label_result(
             "NORMAL",
@@ -293,141 +380,52 @@ def classify_by_rules(conclusion: str) -> dict:
             "empty_conclusion_default_normal",
         )
 
-    uncertain_phrase = contains_any(text, (
-        "nghi", "theo doi", "chua loai tru", "khong loai tru", "kha nang",
-        "co the", "can doi chieu", "de nghi", "nen chup", "chua ro",
-    ))
+    canonical_text = text.rstrip(" .:-")
+    for normal_phrase in NORMAL_CONCLUSION_PATTERNS:
+        if canonical_text == normal_phrase:
+            return label_result(
+                "NORMAL",
+                "NORMAL",
+                ["NORMAL"],
+                normal_phrase,
+                0.95,
+                False,
+                "approved_normal_conclusion",
+            )
 
-    positive_patterns = {
-        "INFECTION_OR_PNEUMONIA": (
-            "viem phoi", "viem phe quan phoi", "dong dac", "tham nhiem",
-            "kinh mo", "ground glass", "ggo", "nhiem trung", "mo phoi",
-            "viem thuy", "viem phe quan",
-        ),
-        "TUBERCULOSIS": ("lao", "tuberculosis", "tb phoi"),
-        "PLEURAL_EFFUSION": ("tran dich mang phoi", "dich mang phoi", "day dich mang phoi"),
-        "PNEUMOTHORAX": ("tran khi khoang mang phoi", "tran khi mang phoi", "khi mang phoi"),
-        "MASS_OR_NODULE": (
-            "khoi", "u phoi", "not", "nodul", "nodule", "mass", "hamartoma",
-            "di can", "ung thu", "carcinoma",
-        ),
-        "FIBROSIS_OR_EMPHYSEMA": (
-            "xo phoi", "xoa phoi", "day xo", "gian phe nang", "khi phe thung",
-            "emphysema", "copd", "benh phoi tac nghen", "xo kem voi",
-            "xo hoa", "xo rai rac", "xoa rai rac", "xo gian phe quan",
-            "gian phe quan", "dai xo", "canh xo", "ken khi",
-            "ken khi thuy duoi phoi", "ken khi nho canh vach",
-        ),
-        "FRACTURE": (
-            "gay xuong", "nut xuong", "chan thuong xuong",
-            "gay 1/3 ngoai xuong don", "gay ran cung truoc xuong suon",
-            "gay cung truoc xuong suon", "vo lun dot song nguc",
-        ),
-    }
-    multi_labels = []
-    evidence = []
-    for label, phrases in positive_patterns.items():
-        phrase = contains_any(text, phrases)
-        if not phrase:
-            continue
-        start = text.find(phrase)
-        if is_negated_finding(text, start):
-            continue
-        multi_labels.append(label)
-        evidence.append(phrase)
-
-    other_abnormal_phrase = contains_any(text, (
-        "bat thuong", "ton thuong", "xep phoi", "phu phoi", "day thanh phe quan",
-        "vong cung dong mach chu", "voi hoa", "tao hang", "u trung that",
-        "hach", "day mang phoi", "dinh mang phoi", "tran dich", "ton tai",
-        "mo khong thuan nhat", "tang dam", "quai dong mach chu vong",
-        "voi hoa thanh quai", "thiet bi tao nhip", "cathete", "catheter",
-        "day dinh", "dinh nhe mang phoi", "ron phoi",
-        "cung dong mach chu vong", "dong mach chu vong", "quai dong mach chu",
-        "day to chuc ke", "day ke", "dai mo", "dam mo", "mo ngoai vi",
-        "mo tuong doi thuan nhat", "day dinh mang phoi", "dinh mang phoi",
-        "dan luu", "dan luu khoang mang phoi", "mo goc suon hoanh",
-        "goc suon hoanh ben trai tu", "goc suon hoanh trai tu",
-        "xep nhe", "xep phoi", "dap phoi",
-        "xuat huyet vung nhan xam", "tran mau nao that",
-        "day niem mac", "tu dich da xoang", "mo nen phoi trai",
-        "bong tim to", "mo thuan nhat goc suon hoanh trai",
-        "quai dmc vong", "quai dong mach vong",
-        "goc suon hoanh phai kem nhon", "tang cac nhanh phe huyet",
-        "day cac nhanh phe huyet quan",
-        "bong tim khong to truong phoi 2 ben sang",
-        "mo gan hoan toan truong phoi phai",
-    ))
-    if other_abnormal_phrase and not multi_labels:
-        start = text.find(other_abnormal_phrase)
-        if not is_negated_finding(text, start):
-            multi_labels.append("OTHER_ABNORMAL")
-            evidence.append(other_abnormal_phrase)
-
-    normal_phrase = contains_any(text, (
-        "khong thay bat thuong",
-        "khong phat hien bat thuong",
-        "khong thay ton thuong",
-        "khong thay hinh anh bat thuong",
-        "binh thuong",
-        "phoi sang deu",
-        "truong phoi hai ben sang deu",
-        "bong tim khong to truong phoi hai ben sang",
-        "bong tim khong to hai phoi sang",
-        "khong thay khoi not",
-    ))
-
-    if multi_labels:
-        primary = choose_primary_label(multi_labels)
-        confidence = 0.65 if uncertain_phrase else 0.9
-        return label_result(
-            "ABNORMAL",
-            primary,
-            multi_labels,
-            "; ".join(evidence),
-            confidence,
-            bool(uncertain_phrase),
-            "rule_positive" + (f":{uncertain_phrase}" if uncertain_phrase else ""),
-        )
-
-    if normal_phrase:
-        confidence = 0.7 if uncertain_phrase else 0.92
+    normal_evidence = find_approved_normal_contains(canonical_text)
+    if normal_evidence:
         return label_result(
             "NORMAL",
             "NORMAL",
             ["NORMAL"],
-            normal_phrase,
-            confidence,
-            bool(uncertain_phrase),
-            "rule_normal" + (f":{uncertain_phrase}" if uncertain_phrase else ""),
+            normal_evidence,
+            0.90,
+            False,
+            "approved_lung_normal_other_organ_finding",
+        )
+
+    evidence, rule_note = find_approved_abnormal_contains(canonical_text)
+    if evidence:
+        return label_result(
+            "ABNORMAL",
+            "OTHER_ABNORMAL",
+            ["OTHER_ABNORMAL"],
+            evidence,
+            0.90,
+            False,
+            f"approved_abnormal_contains:{rule_note}",
         )
 
     return label_result(
         "UNCERTAIN",
         "UNCERTAIN",
         ["UNCERTAIN"],
-        uncertain_phrase,
+        "",
         0.35,
         True,
-        "no_clear_rule_match",
+        "rules_removed_manual_rebuild_required",
     )
-
-
-def choose_primary_label(labels) -> str:
-    priority = (
-        "TUBERCULOSIS",
-        "MASS_OR_NODULE",
-        "PNEUMOTHORAX",
-        "PLEURAL_EFFUSION",
-        "INFECTION_OR_PNEUMONIA",
-        "FIBROSIS_OR_EMPHYSEMA",
-        "FRACTURE",
-        "OTHER_ABNORMAL",
-    )
-    for label in priority:
-        if label in labels:
-            return label
-    return labels[0] if labels else "UNCERTAIN"
 
 
 def normal_abnormal_mapping(coarse_label: str) -> tuple[str, str]:
@@ -626,6 +624,10 @@ def print_label_counts(rows: list[dict]):
     print("Normal/Abnormal training-label counts:")
     for label, count in Counter(row["normal_abnormal_label"] for row in rows).most_common():
         print(f"  {label}: {count}")
+    if any("modality" in row for row in rows):
+        print("Modality counts:")
+        for modality, count in Counter(row.get("modality", "") for row in rows).most_common():
+            print(f"  {modality}: {count}")
 
 
 def cmd_classify_xlsx(args):
@@ -636,13 +638,88 @@ def cmd_classify_xlsx(args):
 
     errors = classify_rows(rows, args)
     preferred = (
-        "xlsx_row", "label_match_id",
+        "xlsx_row", "label_match_id", "modality",
         "coarse_label", "normal_abnormal_label", "normal_abnormal_class",
         "disease_label", "multi_labels", "confidence", "needs_review", "evidence",
         "label_source", "label_reason", "conclusion", "conclusion_full", "label_notes",
     )
     write_csv(args.output, rows, preferred)
     print(f"\nSaved {len(rows)} classified Excel rows to {args.output}")
+    print_label_counts(rows)
+    if errors:
+        print(f"Classification errors: {errors}")
+
+
+def default_labeled_xlsx_path(labels_path: str) -> Path:
+    resolved = resolve_label_path(labels_path)
+    return resolved.with_name(f"{resolved.stem}_labeled.xlsx")
+
+
+def excel_display_label(row: dict) -> str:
+    mapping = {
+        "NORMAL": "Normal",
+        "ABNORMAL": "Abnormal",
+        "UNCERTAIN": "Uncertainty",
+    }
+    return mapping.get(row.get("coarse_label", ""), "Uncertainty")
+
+
+def worksheet_label_rows(sheet) -> tuple[list[dict], int]:
+    values = list(sheet.iter_rows(values_only=True))
+    start_idx = 1 if values and looks_like_header(values[0]) else 0
+    rows = []
+    for row_index, row in enumerate(values[start_idx:], start=start_idx + 1):
+        if not row:
+            continue
+        match_id = str(row[0]).strip("' ") if len(row) > 0 and row[0] else ""
+        conclusion_full = str(row[1]).strip() if len(row) > 1 and row[1] else ""
+        label_notes = str(row[2]).strip() if len(row) > 2 and row[2] else ""
+        if match_id:
+            rows.append({
+                "xlsx_row": str(row_index),
+                "label_match_id": match_id,
+                "conclusion_full": conclusion_full,
+                "conclusion": extract_conclusion(conclusion_full),
+                "label_notes": label_notes,
+                "modality": label_row_modality({"conclusion_full": conclusion_full}),
+            })
+    return rows, start_idx
+
+
+def cmd_label_xlsx(args):
+    resolved_path = resolve_label_path(args.labels)
+    output_path = default_labeled_xlsx_path(args.labels)
+
+    workbook = openpyxl.load_workbook(resolved_path)
+    sheet = workbook.active
+    rows, start_idx = worksheet_label_rows(sheet)
+    print(f"Loaded {len(rows)} rows from {resolved_path}")
+    print(f"Writing labels to sheet={sheet.title!r}, column=C")
+    empty_count = sum(1 for row in rows if not row.get("conclusion", "").strip())
+    print(f"Rows with empty conclusion defaulting to Normal: {empty_count}")
+
+    args.method = "rules"
+    args.api_key = None
+    args.endpoint = ""
+    args.model = ""
+    errors = classify_rows(rows, args)
+
+    if start_idx == 1:
+        sheet.cell(row=1, column=3).value = "Label"
+
+    overwritten = 0
+    for row in rows:
+        row_index = int(row["xlsx_row"])
+        cell = sheet.cell(row=row_index, column=3)
+        if cell.value not in (None, ""):
+            overwritten += 1
+        cell.value = excel_display_label(row)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(output_path)
+    print(f"\nSaved labeled workbook to: {output_path}")
+    print(f"Rows labeled: {len(rows)}")
+    print(f"Existing non-empty cells overwritten in column C: {overwritten}")
     print_label_counts(rows)
     if errors:
         print(f"Classification errors: {errors}")
@@ -806,24 +883,16 @@ def collect_data_zip_rows(data_dir: str) -> list[dict]:
     return rows
 
 
+CT_SCANNER_PATTERN = re.compile(r"ct[\s-]*scanner")
+
+
 def label_row_modality(row: dict) -> str:
     """Classify label row modality from report text convention."""
     detail = row.get("conclusion_full", "") or ""
     if not detail.strip():
         return "X-ray"
     normalized = normalize_text(detail)
-    ct_markers = (
-        "ct",
-        "clvt",
-        "cat lop vi tinh",
-        "chup cat lop",
-        "do day lat cat",
-        "tai tao da mat phang",
-        "cua so nhu mo",
-        "cua so trung that",
-        "tiem thuoc can quang",
-    )
-    return "CT" if any(marker in normalized for marker in ct_markers) else "X-ray"
+    return "CT" if CT_SCANNER_PATTERN.search(normalized) else "X-ray"
 
 
 def short_text(text: str, limit: int = 140) -> str:
@@ -1369,6 +1438,12 @@ def main():
     )
     xlsx_parser.add_argument("--model", default="gpt-4o-mini", help="Model name for --method llm")
 
+    label_xlsx_parser = subparsers.add_parser(
+        "label-xlsx",
+        help="Write Normal/Abnormal/Uncertainty labels into Excel column C",
+    )
+    label_xlsx_parser.add_argument("labels", help="Path to LABELS.xlsx or LABELS.lnk")
+
     phrase_parser = subparsers.add_parser("phrase-report", help="Summarize common report phrases and uncertain rows")
     phrase_parser.add_argument("input", help="Classified CSV from classify or classify-xlsx")
     phrase_parser.add_argument("--output-dir", default="phrase_report", help="Directory for phrase report outputs")
@@ -1424,6 +1499,8 @@ def main():
         cmd_classify(args)
     elif args.command == "classify-xlsx":
         cmd_classify_xlsx(args)
+    elif args.command == "label-xlsx":
+        cmd_label_xlsx(args)
     elif args.command == "phrase-report":
         cmd_phrase_report(args)
     elif args.command == "build-lists":

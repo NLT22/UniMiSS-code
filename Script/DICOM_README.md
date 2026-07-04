@@ -18,6 +18,45 @@ python dicom_analyzer.py analyze <directory_or_zip> [--output report.json] [--no
 
 Reads ZIP files in-memory without extraction. Tracks unique patients, studies, modalities, body parts, demographics, and missing tags.
 
+### Check CHEST/THORAX Filter Before Anonymize
+
+```bash
+python dicom_analyzer.py check-chest-filter <directory_or_zip>
+```
+
+This previews exactly which DICOM files will be skipped by anonymize/export because `BodyPartExamined` does not contain `CHEST` or `THORAX`. It does not modify files and reads ZIP entries in-memory.
+
+Common Windows examples:
+
+```powershell
+# Check CT folder before anonymize
+python dicom_analyzer.py check-chest-filter "D:\DATA\CT"
+
+# Check X-ray folder before anonymize
+python dicom_analyzer.py check-chest-filter "D:\DATA\X-ray"
+
+# Check one ZIP
+python dicom_analyzer.py check-chest-filter "D:\DATA\CT\<id>.zip"
+```
+
+Save CSV reports:
+
+```powershell
+python dicom_analyzer.py check-chest-filter "D:\DATA\CT" --output-dir chest_filter_check_ct
+```
+
+Reports:
+
+```text
+chest_filter_check_ct/
+  chest_filter_summary.csv
+  zip_chest_filter_summary.csv
+  non_chest_thorax_files.csv
+  chest_filter_read_errors.csv
+```
+
+The most important file is `zip_chest_filter_summary.csv`; rows with `would_be_skipped_entirely=yes` are ZIPs that anonymize will not output.
+
 ### Anonymize
 
 ```bash
@@ -33,6 +72,21 @@ python dicom_analyzer.py anonymize <input> <output>
 - **Folder input** -> folder output with full structure preserved
 - **ZIP input** -> auto ZIP output with same filename
 - **ZIP files inside folders** -> preserved as ZIP files, contents anonymized
+- Output must be separate from input. Do not write anonymized output to the same folder or inside the input folder.
+- Press `Ctrl+C` to stop anonymization. Pending files/ZIPs are cancelled and the process exits with code 130. Delete partial output before rerunning.
+
+Safe example:
+
+```powershell
+python dicom_analyzer.py anonymize "D:\DATA\CT" "D:\ANONYMIZED_DATA\CT"
+```
+
+Unsafe examples, now rejected by the script:
+
+```powershell
+python dicom_analyzer.py anonymize "D:\DATA\CT" "D:\DATA\CT"
+python dicom_analyzer.py anonymize "D:\DATA\CT" "D:\DATA\CT\anonymized"
+```
 
 ### Clean Invalid ZIP Files
 
@@ -50,6 +104,28 @@ Preview first without deleting:
 
 ```bash
 python dicom_analyzer.py clean-invalid-zips <directory_or_zip> --dry-run
+```
+
+Common Windows examples:
+
+```powershell
+# Preview invalid ZIPs in X-ray only
+python dicom_analyzer.py clean-invalid-zips "D:\DATA\X-ray" --dry-run
+
+# Delete invalid ZIPs in X-ray only
+python dicom_analyzer.py clean-invalid-zips "D:\DATA\X-ray"
+
+# Preview invalid ZIPs in CT only
+python dicom_analyzer.py clean-invalid-zips "D:\DATA\CT" --dry-run
+
+# Delete invalid ZIPs in CT only
+python dicom_analyzer.py clean-invalid-zips "D:\DATA\CT"
+
+# Preview all invalid ZIPs under DATA
+python dicom_analyzer.py clean-invalid-zips "D:\DATA" --dry-run
+
+# Delete all invalid ZIPs under DATA
+python dicom_analyzer.py clean-invalid-zips "D:\DATA"
 ```
 
 Save a cleanup report:
@@ -208,6 +284,22 @@ To classify every row in `LABELS.xlsx` without requiring a matching DICOM ZIP:
 python dicom_labeler.py classify-xlsx LABELS.xlsx --output labels_all_classified.csv
 ```
 
+To write labels directly into Excel column C instead of creating CSV files:
+
+```bash
+python dicom_labeler.py label-xlsx LABELS.xlsx
+```
+
+This creates `LABELS_labeled.xlsx` next to the input workbook and writes one of these values into column C for each label row:
+
+```text
+Normal
+Abnormal
+Uncertainty
+```
+
+The input workbook is not modified.
+
 To summarize common report phrases and export uncertain rows for manual review:
 
 ```bash
@@ -224,6 +316,42 @@ Default classification uses conservative Vietnamese report rules and writes:
 - `confidence`, `evidence`, `needs_review`, and `label_reason`
 
 Rows marked `UNCERTAIN` or `needs_review=yes` should be reviewed manually before being used for training. They are excluded from generated training lists by default.
+
+Current rule reset state:
+
+- All medical phrase rules have been removed so the rule set can be rebuilt from the start.
+- Empty conclusions still default to `Normal`, matching the current project convention for blank label rows.
+- The exact approved normal conclusion `KẾT LUẬN: --Hình ảnh X – Quang ngực thẳng không thấy bất thường.` is labeled `Normal`.
+- Every other non-empty conclusion is labeled `Uncertainty` until new rules are explicitly added.
+- As of the current rule set, all 1208 rows in `LABELS_FINAL.xlsx` resolve to `Normal` or `Abnormal`; no rows remain `Uncertainty`.
+
+Label rule registry:
+
+| Rule ID | Rule type | Internal pattern(s) | Label | Example | Notes |
+|---|---|---|---|---|---|
+| `empty_conclusion_default_normal` | Empty conclusion | Empty string | `Normal` | Empty conclusion cell | Project convention: rows without report content are treated as default normal X-ray samples. |
+| `approved_normal_conclusion` | Exact normal conclusion | `hinh anh x quang nguc thang khong thay bat thuong` | `Normal` | `K?T LU?N: --H?nh ?nh X ? Quang ng?c th?ng kh?ng th?y b?t th??ng.` | Exact-match X-ray normal conclusion after extracting `K?T LU?N`. |
+| `approved_normal_conclusion` | Exact normal conclusion | `hinh anh ct-scanner long nguc hien tai khong thay bat thuong` | `Normal` | `H?nh ?nh CT-Scanner l?ng ng?c hi?n t?i kh?ng th?y b?t th??ng.` | Exact-match CT normal conclusion. |
+| `approved_normal_conclusion` | Exact/punctuation-tolerant normal variants | `...nghi?ng kh?ng th?y b?t th??ng`, `tr??ng ph?i hai b?n s?ng ??u`, `b?ng tim kh?ng to hai ph?i s?ng`, `hai ph?i b?nh th??ng` | `Normal` | `H?nh ?nh X ? Quang ng?c th?ng :- B?ng tim kh?ng to, hai ph?i s?ng.` | Normal rules stay narrow to avoid hiding later abnormal findings. |
+| `approved_lung_normal_other_organ_finding` | Lung/chest normal, other organ/spine/device text present | CT/X-ray chest normal plus selected non-lung text | `Normal` | `Tho?i h?a c?t s?ng c?. H?nh ?nh X-quang ng?c th?ng kh?ng th?y b?t th??ng` | For this downstream chest task, lung/chest normal is kept as `Normal` even if other organ/spine text is abnormal. |
+| `approved_lung_normal_other_organ_finding` | Device/tube present but chest otherwise normal | `con hinh anh thiet bi tao nhip...`, `...khong thay bat thuong con shilley khi quan` | `Normal` | `H?nh ?nh X ? Quang ng?c th?ng kh?ng th?y b?t th??ng. C?n Shilley kh? qu?n.` | Approved as lung/chest normal for this project. |
+| `approved_abnormal_contains` | Aorta arch prominence | aorta term + `vong` | `Abnormal` | `H?nh ?nh X ? Quang ng?c th?ng: Quai ??ng m?ch ch? v?ng.` | Aorta terms include `quai ??ng m?ch ch?`, `cung ??ng m?ch ch?`, `quai ?MC`, and `quai ??ng m?ch`. |
+| `approved_abnormal_contains` | Aorta calcification | `quai dong mach chu voi hoa` | `Abnormal` | `H?nh ?nh X ? Quang b?ng tim kh?ng to, quai ??ng m?ch ch? v?i h?a, hai tr??ng ph?i s?ng.` | Approved for aortic arch calcification, even if both lung fields are bright. |
+| `approved_abnormal_contains` | Fibrosis/atelectasis/bronchiectasis | `xo`, `xep`, `gian phe quan` | `Abnormal` | `H?nh ?nh X ? Quang ng?c th?ng: D?i x? h?a ??nh ph?i ph?i.` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Opacity/mass shadow | `mo`, `dam mo` | `Abnormal` | `H?nh ?nh m? kh?ng thu?n nh?t quanh r?n ph?i tr?i.` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Pleural effusion | `tran dich` | `Abnormal` | `Tr?n d?ch khoang m?ng ph?i 2 b?n m?c ?? ?t.` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Pneumothorax/air | `tran khi` | `Abnormal` | `H?nh ?nh tr?n kh? khoang m?ng ph?i.` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Infection/inflammation | `viem` | `Abnormal` | `H?nh ?nh TD vi?m ph?i th?y d??i hai b?n.` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Fracture/compression | `gay`, `vo lun` | `Abnormal` | `H?nh ?nh g?y x??ng s??n 5,6,7,8 P` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Enlarged heart | `bong tim to`, `tim to` | `Abnormal` | `H?nh ?nh b?ng tim to.` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Bronchial/peribronchial abnormality | `phe quan`, `phe huyet quan`, `day thanh phe quan`, `tang cac nhanh phe huyet` | `Abnormal` | `H?nh ?nh X ? Quang ng?c th?ng d?y th?nh ph? qu?n hai ph?i.` | Includes bronchial wall and thickened bronchovascular marking patterns. |
+| `approved_abnormal_contains` | Catheter | `cathete`, `catheter` | `Abnormal` | `H?nh ?nh Cathete t?nh m?ch trung t?m ngang m?c cung sau x??ng s??n IX ph?i.` | Approved during rule rebuild. |
+| `approved_abnormal_contains` | Pleural/interstitial/angle findings | `day mang phoi`, `day dinh mang phoi`, `day to chuc ke`, `day ke`, `goc suon hoanh ... tu` | `Abnormal` | `D?y t? ch?c k? hai ph?i. G?c s??n ho?nh b?n tr?i t?.` | Includes pleural thickening/adhesion and interstitial thickening. |
+| `approved_abnormal_contains` | Hemorrhage/sinus fluid | `xuat huyet`, `day niem mac`, `tu dich` | `Abnormal` | `Xu?t huy?t n?o th?t b?n hai b?n. D?y ni?m m?c, t? d?ch ?a xoang.` | Approved during rule rebuild. |
+| `approved_abnormal_contains` | Lesion/nodule/tumor/cavity/TB | `ton thuong`, `not dac`, `u thuy`, `u phoi`, `hang phoi`, `lao` | `Abnormal` | `U th?y tr?n ph?i b?n ph?i. N?t ??c ngo?i vi th?y tr?n ph?i tr?i.` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Node/mediastinum/hilum/calcified nodule | `hach trung that`, `rong trung that`, `ron phoi trai dam`, `not dam do voi` | `Abnormal` | `H?nh ?nh X ? Quang ng?c th?ng r?n ph?i tr?i ??m` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Emphysema/air cyst | `khi phe thung`, `ken khi` | `Abnormal` | `H?nh ?nh k?n kh? th?y d??i ph?i tr?i` | Broad contains-rule approved during rule rebuild. |
+| `approved_abnormal_contains` | Soft tissue edema | `phu ne` | `Abnormal` | `H?nh ?nh CT-Scanner l?ng ng?c hi?n t?i kh?ng th?y b?t th??ng. H?nh ?nh ph? n? nh? ph?n m?m quanh kh?p ?c s??n hai b?n.` | Mild soft-tissue edema around the sternocostal joints is a definite abnormal finding even when lung parenchyma is otherwise normal. |
 
 Optional LLM-assisted labeling:
 

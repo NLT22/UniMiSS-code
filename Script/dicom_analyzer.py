@@ -4,6 +4,7 @@ DICOM Patient Information Analyzer, Anonymizer, and UniMiSSPlus Exporter
 
 Usage:
     python dicom_analyzer.py analyze <directory> [--output report.json] [--no-recursive]
+    python dicom_analyzer.py check-chest-filter <directory_or_zip> [--output-dir report_dir]
     python dicom_analyzer.py anonymize <input_dir> <output_dir>
     python dicom_analyzer.py clean-invalid-zips <directory> [--dry-run]
     python dicom_analyzer.py export-unimissplus <input> <output_data_dir>
@@ -26,9 +27,10 @@ import tempfile
 from io import BytesIO
 import hashlib
 import os
+import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from threading import Lock
+from threading import Event, Lock
 import math
 
 try:
@@ -36,6 +38,11 @@ try:
 except ImportError:
     print("Error: pydicom is not installed. Install it with: pip install pydicom")
     sys.exit(1)
+
+
+def body_part_is_chest_or_thorax(body_part) -> bool:
+    text = str(body_part or '').upper()
+    return 'CHEST' in text or 'THORAX' in text
 
 
 class DICOMAnalyzer:
@@ -292,6 +299,37 @@ class DICOMAnonymizer:
         }
         self.max_workers = min(32, max(1, os.cpu_count() or 1))
         self._stats_lock = Lock()
+        self._cancel_event = Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def _raise_if_cancelled(self):
+        if self._cancel_event.is_set():
+            raise KeyboardInterrupt
+
+    def _ensure_safe_output_path(self, input_path: Path, output_path: Path):
+        """Prevent accidental overwrite or recursive processing of output."""
+        input_resolved = input_path.resolve()
+        output_resolved = output_path.resolve()
+        if input_path.is_file():
+            if output_resolved == input_resolved:
+                raise ValueError(
+                    "Output ZIP is the same as input ZIP. Choose a different output directory or filename."
+                )
+            return
+        if output_resolved == input_resolved:
+            raise ValueError("Output directory is the same as input directory. Choose a separate output directory.")
+        if output_resolved.is_relative_to(input_resolved):
+            raise ValueError("Output directory is inside input directory. Choose an output directory outside the input tree.")
+
+    def _stats_delta(self, before: dict) -> Counter:
+        return Counter({
+            "processed": self.stats["processed"] - before.get("processed", 0),
+            "anonymized": self.stats["anonymized"] - before.get("anonymized", 0),
+            "skipped": self.stats["skipped"] - before.get("skipped", 0),
+            "failed": self.stats["failed"] - before.get("failed", 0),
+        })
 
     def _add_stat(self, key: str, amount: int = 1):
         with self._stats_lock:
@@ -334,65 +372,99 @@ class DICOMAnonymizer:
         print(f"Anonymizing DICOM files from {input_dir} to {output_dir}")
         print(f"NOTE: Original files will NOT be modified. Anonymized copies will be saved to output directory.\n")
 
-        input_path = Path(input_dir)
-        if not input_path.exists():
-            raise ValueError(f"Input directory does not exist: {input_dir}")
+        try:
+            input_path = Path(input_dir)
+            if not input_path.exists():
+                raise ValueError(f"Input directory does not exist: {input_dir}")
 
-        if input_path.is_file() and input_path.suffix.lower() == '.zip':
-            output_path = Path(output_dir)
-            if output_path.suffix.lower() != '.zip':
-                output_path = output_path / input_path.name
-            print(f"Input is ZIP file - output will be saved as: {output_path}\n")
+            if input_path.is_file() and input_path.suffix.lower() == '.zip':
+                output_path = Path(output_dir)
+                if output_path.suffix.lower() != '.zip':
+                    output_path = output_path / input_path.name
+                self._ensure_safe_output_path(input_path, output_path)
+                print(f"Input is ZIP file - output will be saved as: {output_path}\n")
 
-            with tempfile.TemporaryDirectory() as temp_output_dir:
-                temp_output_path = Path(temp_output_dir)
-                self._process_files(input_path, temp_output_path)
+                with tempfile.TemporaryDirectory() as temp_output_dir:
+                    temp_output_path = Path(temp_output_dir)
+                    before = dict(self.stats)
+                    self._process_files(input_path, temp_output_path)
 
-                files_in_zip = [f for f in temp_output_path.rglob('*') if f.is_file()]
-                if not files_in_zip:
-                    print("All files were filtered out (non-CHEST/THORAX) - no output ZIP created.\n")
-                    self._print_summary()
-                    return
+                    self._raise_if_cancelled()
+                    files_in_zip = [f for f in temp_output_path.rglob('*') if f.is_file()]
+                    if not files_in_zip:
+                        self._print_empty_output_reason(
+                            self._stats_delta(before),
+                            "No output ZIP created",
+                            input_path,
+                        )
+                        self._print_summary()
+                        return
 
-                print(f"\nCreating output ZIP file: {output_path}")
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
-                    for file_path in files_in_zip:
-                        arcname = file_path.relative_to(temp_output_path)
-                        zip_out.write(file_path, arcname)
-                print(f"Anonymized files saved to ZIP: {output_path}")
-        else:
-            output_path = Path(output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
-            self._process_files(input_path, output_path)
+                    print(f"\nCreating output ZIP file: {output_path}")
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
+                        for file_path in files_in_zip:
+                            self._raise_if_cancelled()
+                            arcname = file_path.relative_to(temp_output_path)
+                            zip_out.write(file_path, arcname)
+                    print(f"Anonymized files saved to ZIP: {output_path}")
+            else:
+                output_path = Path(output_dir)
+                self._ensure_safe_output_path(input_path, output_path)
+                output_path.mkdir(parents=True, exist_ok=True)
+                self._process_files(input_path, output_path)
 
-        self._print_summary()
+            self._print_summary()
+        except KeyboardInterrupt:
+            self.cancel()
+            print("\nInterrupted by user. Stopping anonymization; queued work will be cancelled.")
+            self._print_summary()
+            raise
 
     def _process_files(self, input_path: Path, output_path: Path, parallel: bool = True):
         """Process top-level files in parallel; process extracted ZIP contents sequentially."""
+        self._raise_if_cancelled()
         if input_path.is_file() and input_path.suffix.lower() == '.zip':
             self._anonymize_zip_file(input_path, output_path)
         else:
             files = [file_path for file_path in input_path.glob("**/*") if file_path.is_file()]
             if len(files) <= 1 or not parallel:
                 for file_path in files:
+                    self._raise_if_cancelled()
                     self._process_file_task(file_path, input_path, output_path)
                 return
 
             print(f"Using {self.max_workers} parallel workers for anonymization.")
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = [
-                    executor.submit(self._process_file_task, file_path, input_path, output_path)
-                    for file_path in files
-                ]
+            executor = ThreadPoolExecutor(max_workers=self.max_workers)
+            futures = []
+            cancelled = False
+            try:
+                for file_path in files:
+                    self._raise_if_cancelled()
+                    futures.append(executor.submit(self._process_file_task, file_path, input_path, output_path))
                 for future in as_completed(futures):
                     try:
                         future.result()
+                    except KeyboardInterrupt:
+                        self.cancel()
+                        cancelled = True
+                        for pending in futures:
+                            pending.cancel()
+                        raise
                     except Exception as e:
                         self._add_stat('failed')
                         self._add_error(str(input_path), e)
+            except KeyboardInterrupt:
+                self.cancel()
+                cancelled = True
+                for pending in futures:
+                    pending.cancel()
+                raise
+            finally:
+                executor.shutdown(wait=not cancelled, cancel_futures=True)
 
     def _process_file_task(self, file_path: Path, input_path: Path, output_path: Path):
+        self._raise_if_cancelled()
         relative_path = file_path.relative_to(input_path)
         if file_path.suffix.lower() == '.zip':
             out_zip = output_path / relative_path
@@ -403,26 +475,45 @@ class DICOMAnonymizer:
         self._add_stat('processed')
         out_file = output_path / relative_path
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        if not self._anonymize_file(file_path, out_file):
+        if self._anonymize_file_with_status(file_path, out_file) != "anonymized":
             self._add_stat('processed', -1)
 
     def _anonymize_zip_to_zip(self, input_zip: Path, output_zip: Path):
         print(f"Processing ZIP file: {input_zip}")
         try:
+            local_counts = Counter()
+            self._raise_if_cancelled()
             with tempfile.TemporaryDirectory() as temp_extract:
                 with zipfile.ZipFile(input_zip, 'r') as zf:
                     zf.extractall(temp_extract)
 
+                self._raise_if_cancelled()
                 with tempfile.TemporaryDirectory() as temp_output:
-                    self._process_files(Path(temp_extract), Path(temp_output), parallel=False)
+                    temp_extract_path = Path(temp_extract)
+                    temp_output_path = Path(temp_output)
+                    for file_path in temp_extract_path.glob("**/*"):
+                        self._raise_if_cancelled()
+                        if not file_path.is_file():
+                            continue
+                        relative_path = file_path.relative_to(temp_extract_path)
+                        out_file = temp_output_path / relative_path
+                        out_file.parent.mkdir(parents=True, exist_ok=True)
+                        self._add_stat('processed')
+                        local_counts["processed"] += 1
+                        status = self._anonymize_file_with_status(file_path, out_file)
+                        local_counts[status] += 1
+                        if status != "anonymized":
+                            self._add_stat('processed', -1)
 
+                    self._raise_if_cancelled()
                     files_in_zip = [f for f in Path(temp_output).rglob('*') if f.is_file()]
                     if not files_in_zip:
-                        print(f"  All files filtered out (non-CHEST/THORAX) - skipping ZIP.\n")
+                        self._print_empty_output_reason(local_counts, "Skipping ZIP", input_zip)
                         return
 
                     with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zf_out:
                         for f in files_in_zip:
+                            self._raise_if_cancelled()
                             arcname = f.relative_to(Path(temp_output))
                             sanitized = self._sanitize_zip_path(str(arcname))
                             zf_out.write(f, sanitized)
@@ -437,6 +528,7 @@ class DICOMAnonymizer:
 
                 with tempfile.TemporaryDirectory() as temp_dir:
                     for file_name in file_list:
+                        self._raise_if_cancelled()
                         if file_name.endswith('/'):
                             continue
 
@@ -450,7 +542,7 @@ class DICOMAnonymizer:
                             out_file = output_dir / sanitized
                             out_file.parent.mkdir(parents=True, exist_ok=True)
 
-                            if not self._anonymize_file(temp_file_path, out_file):
+                            if self._anonymize_file_with_status(temp_file_path, out_file) != "anonymized":
                                 self._add_stat('processed', -1)
 
                         except Exception as e:
@@ -467,18 +559,20 @@ class DICOMAnonymizer:
             return file_name
         return str(Path(parts[0].split('-')[0], *list(parts[1:])))
 
-    def _anonymize_file(self, input_file: Path, output_file: Path):
-        """Anonymize one DICOM file and return False when it is filtered out."""
+    def _anonymize_file_with_status(self, input_file: Path, output_file: Path) -> str:
+        """Anonymize one DICOM file and return anonymized/skipped/failed."""
         try:
+            self._raise_if_cancelled()
             try:
                 ds = pydicom.dcmread(str(input_file), force=False)
             except Exception:
                 ds = pydicom.dcmread(str(input_file), force=True)
 
+            self._raise_if_cancelled()
             body_part = ds.get('BodyPartExamined', '')
-            if 'CHEST' not in body_part.upper() and 'THORAX' not in body_part.upper():
+            if not body_part_is_chest_or_thorax(body_part):
                 self._add_stat('skipped')
-                return False
+                return "skipped"
 
             # Patient identity: remove names/free text, hash lookback IDs, keep age/sex.
             if hasattr(ds, 'PatientName'):
@@ -573,14 +667,34 @@ class DICOMAnonymizer:
                 'RequestingPhysician',
             ])
 
+            self._raise_if_cancelled()
             ds.save_as(str(output_file))
             self._add_stat('anonymized')
-            return True
+            return "anonymized"
 
         except Exception as e:
             self._add_stat('failed')
             self._add_error(str(input_file), e)
-            return False
+            return "failed"
+
+    def _print_empty_output_reason(self, counts: Counter, action: str, source_path: Path | None = None):
+        skipped = counts.get("skipped", 0)
+        failed = counts.get("failed", 0)
+        anonymized = counts.get("anonymized", 0)
+        processed = counts.get("processed", 0)
+        prefix = f"  {action}"
+        if source_path is not None:
+            prefix += f" for {source_path}"
+        if anonymized:
+            print(f"{prefix}: no files found after processing, but {anonymized} files were anonymized.\n")
+        elif failed and skipped:
+            print(f"{prefix}: no output files. Filtered {skipped} non-CHEST/THORAX file(s), failed {failed} file(s).\n")
+        elif failed:
+            print(f"{prefix}: no output files because {failed} file(s) failed during anonymization.\n")
+        elif skipped:
+            print(f"{prefix}: all {skipped} file(s) filtered out as non-CHEST/THORAX.\n")
+        else:
+            print(f"{prefix}: no output files were produced from {processed} processed file(s).\n")
 
     def _print_summary(self):
         print("\n" + "="*80)
@@ -592,7 +706,10 @@ class DICOMAnonymizer:
             print(f"  Skipped (non-CHEST/THORAX): {self.stats['skipped']}")
         print(f"  Failed: {self.stats['failed']}")
         print(f"\n  NOTE: Original files were NOT modified.")
-        print(f"  All anonymized files were saved to the output directory only.")
+        if self._cancel_event.is_set():
+            print(f"  Interrupted output may be incomplete; delete the partial output directory/ZIP before rerunning.")
+        else:
+            print(f"  All anonymized files were saved to the output directory only.")
         print("="*80)
 
 
@@ -690,6 +807,226 @@ class InvalidZipCleaner:
             print("\n--- DELETE ERRORS ---")
             for error in self.errors[:20]:
                 print(f"  {error['file']}: {error['error']}")
+        print("="*80)
+
+
+class ChestThoraxFilterChecker:
+    """Preview which DICOM files anonymize/export will skip by BodyPartExamined."""
+
+    def __init__(self, limit: int = 30):
+        self.limit = limit
+        self.stats = Counter()
+        self.non_chest_rows = []
+        self.read_error_rows = []
+        self.zip_summary_rows = []
+
+    def check(self, input_path: str, output_dir: str | None = None):
+        root = Path(input_path)
+        if not root.exists():
+            raise ValueError(f"Input path does not exist: {input_path}")
+
+        for path in self._collect_files(root):
+            if path.suffix.lower() == ".zip":
+                self._check_zip(path)
+            else:
+                self._check_loose_file(path)
+
+        self._print_summary()
+        if output_dir:
+            self._write_reports(Path(output_dir))
+        return {
+            "stats": dict(self.stats),
+            "non_chest_files": self.non_chest_rows,
+            "read_errors": self.read_error_rows,
+            "zip_summary": self.zip_summary_rows,
+        }
+
+    def _collect_files(self, root: Path):
+        if root.is_file():
+            return [root]
+        return sorted(path for path in root.rglob("*") if path.is_file())
+
+    def _read_dicom_from_bytes(self, raw: bytes):
+        buffer = BytesIO(raw)
+        try:
+            return pydicom.dcmread(buffer, force=False, stop_before_pixels=True)
+        except Exception:
+            buffer.seek(0)
+            return pydicom.dcmread(buffer, force=True, stop_before_pixels=True)
+
+    def _read_dicom_from_zip_entry(self, zip_ref, name: str):
+        with zip_ref.open(name) as handle:
+            try:
+                return pydicom.dcmread(handle, force=False, stop_before_pixels=True)
+            except Exception:
+                pass
+        with zip_ref.open(name) as handle:
+            return pydicom.dcmread(handle, force=True, stop_before_pixels=True)
+
+    def _read_dicom_from_file(self, path: Path):
+        try:
+            return pydicom.dcmread(str(path), force=False, stop_before_pixels=True)
+        except Exception:
+            return pydicom.dcmread(str(path), force=True, stop_before_pixels=True)
+
+    def _row_from_dataset(self, ds, source_path: str, container: str = ""):
+        body_part = str(ds.get("BodyPartExamined", "") or "")
+        keep = body_part_is_chest_or_thorax(body_part)
+        row = {
+            "container": container,
+            "file": source_path,
+            "status": "keep" if keep else "skip_non_chest_thorax",
+            "body_part_examined": body_part,
+            "modality": str(ds.get("Modality", "") or ""),
+            "study_description": str(ds.get("StudyDescription", "") or ""),
+            "series_description": str(ds.get("SeriesDescription", "") or ""),
+            "protocol_name": str(ds.get("ProtocolName", "") or ""),
+        }
+        return row
+
+    def _check_loose_file(self, path: Path):
+        try:
+            ds = self._read_dicom_from_file(path)
+            row = self._row_from_dataset(ds, str(path))
+            self.stats["dicom_files"] += 1
+            if row["status"] == "keep":
+                self.stats["would_keep"] += 1
+            else:
+                self.stats["would_skip_non_chest_thorax"] += 1
+                self.non_chest_rows.append(row)
+        except Exception as e:
+            self.stats["read_failed"] += 1
+            self.read_error_rows.append({
+                "container": "",
+                "file": str(path),
+                "error": str(e),
+            })
+
+    def _check_zip(self, zip_path: Path):
+        zip_counts = Counter()
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = [name for name in zf.namelist() if not name.endswith("/")]
+                for name in names:
+                    try:
+                        ds = self._read_dicom_from_zip_entry(zf, name)
+                        row = self._row_from_dataset(ds, name, str(zip_path))
+                        self.stats["dicom_files"] += 1
+                        zip_counts["dicom_files"] += 1
+                        if row["status"] == "keep":
+                            self.stats["would_keep"] += 1
+                            zip_counts["would_keep"] += 1
+                        else:
+                            self.stats["would_skip_non_chest_thorax"] += 1
+                            zip_counts["would_skip_non_chest_thorax"] += 1
+                            self.non_chest_rows.append(row)
+                    except Exception as e:
+                        self.stats["read_failed"] += 1
+                        zip_counts["read_failed"] += 1
+                        self.read_error_rows.append({
+                            "container": str(zip_path),
+                            "file": name,
+                            "error": str(e),
+                        })
+        except Exception as e:
+            self.stats["zip_read_failed"] += 1
+            self.read_error_rows.append({
+                "container": str(zip_path),
+                "file": "",
+                "error": str(e),
+            })
+            return
+
+        zip_row = {
+            "zip_path": str(zip_path),
+            "dicom_files": str(zip_counts["dicom_files"]),
+            "would_keep": str(zip_counts["would_keep"]),
+            "would_skip_non_chest_thorax": str(zip_counts["would_skip_non_chest_thorax"]),
+            "read_failed": str(zip_counts["read_failed"]),
+            "would_be_skipped_entirely": "yes" if zip_counts["dicom_files"] and not zip_counts["would_keep"] else "no",
+        }
+        self.zip_summary_rows.append(zip_row)
+        if zip_row["would_be_skipped_entirely"] == "yes":
+            self.stats["zips_would_be_skipped_entirely"] += 1
+
+    def _write_csv(self, path: Path, rows: list[dict], fieldnames: list[str]):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+    def _write_reports(self, output_dir: Path):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._write_csv(
+            output_dir / "non_chest_thorax_files.csv",
+            self.non_chest_rows,
+            [
+                "container", "file", "status", "body_part_examined", "modality",
+                "study_description", "series_description", "protocol_name",
+            ],
+        )
+        self._write_csv(
+            output_dir / "zip_chest_filter_summary.csv",
+            self.zip_summary_rows,
+            [
+                "zip_path", "dicom_files", "would_keep",
+                "would_skip_non_chest_thorax", "read_failed",
+                "would_be_skipped_entirely",
+            ],
+        )
+        self._write_csv(
+            output_dir / "chest_filter_read_errors.csv",
+            self.read_error_rows,
+            ["container", "file", "error"],
+        )
+        summary = [{
+            "dicom_files": str(self.stats["dicom_files"]),
+            "would_keep": str(self.stats["would_keep"]),
+            "would_skip_non_chest_thorax": str(self.stats["would_skip_non_chest_thorax"]),
+            "zips_would_be_skipped_entirely": str(self.stats["zips_would_be_skipped_entirely"]),
+            "read_failed": str(self.stats["read_failed"]),
+            "zip_read_failed": str(self.stats["zip_read_failed"]),
+        }]
+        self._write_csv(output_dir / "chest_filter_summary.csv", summary, list(summary[0].keys()))
+        print(f"\nCSV reports saved to: {output_dir}")
+
+    def _print_summary(self):
+        print("\n" + "="*80)
+        print("CHEST/THORAX FILTER PREFLIGHT")
+        print("="*80)
+        print("Rule: anonymize keeps only DICOM files whose BodyPartExamined contains CHEST or THORAX.")
+        print(f"  DICOM files read: {self.stats['dicom_files']}")
+        print(f"  Would keep: {self.stats['would_keep']}")
+        print(f"  Would skip as non-CHEST/THORAX: {self.stats['would_skip_non_chest_thorax']}")
+        print(f"  ZIPs that would be skipped entirely: {self.stats['zips_would_be_skipped_entirely']}")
+        print(f"  DICOM read failures: {self.stats['read_failed']}")
+        print(f"  ZIP read failures: {self.stats['zip_read_failed']}")
+
+        skipped_zips = [row for row in self.zip_summary_rows if row["would_be_skipped_entirely"] == "yes"]
+        if skipped_zips:
+            print(f"\n--- ZIPs skipped entirely by anonymize (first {self.limit}) ---")
+            for row in skipped_zips[:self.limit]:
+                print(
+                    f"  {row['zip_path']} | "
+                    f"skip={row['would_skip_non_chest_thorax']} read_failed={row['read_failed']}"
+                )
+
+        if self.non_chest_rows:
+            print(f"\n--- Non-CHEST/THORAX files (first {self.limit}) ---")
+            for row in self.non_chest_rows[:self.limit]:
+                where = f"{row['container']}:{row['file']}" if row.get("container") else row["file"]
+                print(
+                    f"  {where} | BodyPartExamined={row['body_part_examined']!r} | "
+                    f"Series={row['series_description']!r}"
+                )
+
+        if self.read_error_rows:
+            print(f"\n--- Read errors (first {self.limit}) ---")
+            for row in self.read_error_rows[:self.limit]:
+                where = f"{row['container']}:{row['file']}" if row.get("container") else row["file"]
+                print(f"  {where}: {row['error']}")
         print("="*80)
 
 
@@ -798,8 +1135,8 @@ class UniMiSSPlusExporter:
             try:
                 raw = item["read"]()
                 ds = self._read_dicom(raw, stop_before_pixels=True)
-                body_part = str(ds.get("BodyPartExamined", "")).upper()
-                if "CHEST" not in body_part and "THORAX" not in body_part:
+                body_part = ds.get("BodyPartExamined", "")
+                if not body_part_is_chest_or_thorax(body_part):
                     self.stats["skipped_non_chest_thorax"] += 1
                     continue
                 item["ds"] = ds
@@ -1103,6 +1440,14 @@ def main():
     anon_parser.add_argument('input_dir', help='Input directory or ZIP file')
     anon_parser.add_argument('output_dir', help='Output directory or ZIP file')
 
+    check_filter_parser = subparsers.add_parser(
+        'check-chest-filter',
+        help='Preview files that anonymize/export will skip as non-CHEST/THORAX',
+    )
+    check_filter_parser.add_argument('path', help='Directory or ZIP file to scan')
+    check_filter_parser.add_argument('--output-dir', help='Directory for CSV preflight reports')
+    check_filter_parser.add_argument('--limit', type=int, default=30, help='Number of rows to print per section')
+
     clean_parser = subparsers.add_parser('clean-invalid-zips', help='Delete .zip files that are not valid ZIP archives')
     clean_parser.add_argument('path', help='Directory or ZIP file to scan')
     clean_parser.add_argument('--dry-run', action='store_true', help='Report invalid ZIP files without deleting them')
@@ -1134,7 +1479,15 @@ def main():
             print(f"\nReport saved to: {args.output}")
 
     elif args.command == 'anonymize':
-        DICOMAnonymizer().anonymize_directory(args.input_dir, args.output_dir)
+        try:
+            DICOMAnonymizer().anonymize_directory(args.input_dir, args.output_dir)
+        except KeyboardInterrupt:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(130)
+
+    elif args.command == 'check-chest-filter':
+        ChestThoraxFilterChecker(limit=args.limit).check(args.path, args.output_dir)
 
     elif args.command == 'clean-invalid-zips':
         report = InvalidZipCleaner(dry_run=args.dry_run).clean(args.path)

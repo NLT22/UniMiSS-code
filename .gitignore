@@ -51,6 +51,7 @@ work/
 # Script/ generated label CSVs
 Script/labels_raw.csv
 Script/labels_classified.csv
+Script/ANONYMIZE
 UniMiSS/Downstream/RICORD/dataset/
 UniMiSS/Downstream/BCV/dataset/
 UniMiSSPlus/Downstream/3D/RICORD/dataset/
