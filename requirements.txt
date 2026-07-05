@@ -1,0 +1,28 @@
+# Python dependencies for the Vietnamese chest X-ray UniMiSS+ pipeline.
+# Versions pinned to the environment the reported results were produced with.
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# NOTE on PyTorch: the pinned build is CUDA 12.8 (RTX 5060 Ti). Install torch /
+# torchvision from the matching CUDA index, e.g.:
+#   pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+# For CPU-only or a different CUDA version, pick the matching wheels instead.
+torch==2.11.0
+torchvision==0.26.0
+
+# Scientific / ML
+numpy==2.5.0
+scipy==1.18.0
+scikit-learn==1.9.0
+matplotlib==3.11.0
+tqdm==4.68.3
+
+# DICOM ingest, anonymize, export, labeling
+pydicom==3.0.2
+openpyxl==3.1.5          # read LABELS_FINAL.xlsx conclusions
+pillow==12.2.0           # export 512x512 PNG
+nibabel==5.4.2           # CT volume I/O
+psutil==7.2.2            # memory guard in DRR generation
+
+# CT -> simulated X-ray (DRR); only needed for the CT-DRR augmentation experiment
+diffdrr==0.6.1

@@ -91,6 +91,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--seeds", type=str, default=None,
                         help="Comma-separated seeds to run sequentially, e.g. '1234,2024,42'. Each run writes to <output_dir>/seed_<seed>.")
+    parser.add_argument("--loss", choices=["ce", "asl"], default="ce",
+                        help="Loss for single-label covid tasks: 'ce' cross-entropy, 'asl' single-label Asymmetric Loss for class imbalance.")
+    parser.add_argument("--asl_gamma_neg", type=float, default=4.0, help="ASL focusing for negatives (majority class).")
+    parser.add_argument("--asl_gamma_pos", type=float, default=0.0, help="ASL focusing for positives.")
+    parser.add_argument("--class_weight", choices=["none", "balanced"], default="none",
+                        help="'balanced' weights CE loss by inverse class frequency of --covid_train_list (for imbalanced covid tasks).")
     parser.add_argument("--normalize", choices=["chestx-ray", "imagenet", "none"], default="chestx-ray")
     parser.add_argument("--test_augment", action="store_true",
                         help="Use TenCrop at test time. Slower, but matches the original downstream script.")
@@ -1165,6 +1171,38 @@ def summarize_seed_results(seed_results, output_dir, task):
     return summary
 
 
+class ASLSingleLabel(torch.nn.Module):
+    """Single-label Asymmetric Loss (Ben-Baruch et al., 2021) for softmax outputs.
+
+    Down-weights easy negatives (the majority class) via gamma_neg, addressing
+    class imbalance the way the Vietnamese CXR study of Nguyen et al. (2022) did
+    with ASL. gamma_neg > gamma_pos focuses learning on the minority positives.
+    """
+
+    def __init__(self, gamma_neg=4.0, gamma_pos=0.0, eps=0.0):
+        super().__init__()
+        self.gamma_neg = gamma_neg
+        self.gamma_pos = gamma_pos
+        self.eps = eps
+        self.logsoftmax = torch.nn.LogSoftmax(dim=-1)
+
+    def forward(self, inputs, target):
+        num_classes = inputs.size(-1)
+        log_preds = self.logsoftmax(inputs)
+        targets = torch.zeros_like(inputs).scatter_(1, target.long().unsqueeze(1), 1)
+        anti_targets = 1 - targets
+        xs_pos = torch.exp(log_preds)
+        xs_neg = 1 - xs_pos
+        asymmetric_w = torch.pow(
+            1 - xs_pos * targets - xs_neg * anti_targets,
+            self.gamma_pos * targets + self.gamma_neg * anti_targets,
+        )
+        log_preds = log_preds * asymmetric_w
+        if self.eps > 0:
+            targets = targets.mul(1 - self.eps).add(self.eps / num_classes)
+        return -(targets * log_preds).sum(dim=-1).mean()
+
+
 def train_one_epoch(model, loader, criterion, optimizer, task, device, epoch, args, total_steps):
     model.train()
     losses = []
@@ -1221,7 +1259,29 @@ def run_experiment(args):
         print(f"Using DataParallel on {torch.cuda.device_count()} GPUs")
     elif args.multi_gpu:
         print("--multi_gpu was set, but fewer than 2 CUDA GPUs are visible; using single-device training")
-    criterion = torch.nn.CrossEntropyLoss() if args.task in ("covid", "covid_qu_ex") else torch.nn.BCEWithLogitsLoss()
+    if args.task in ("covid", "covid_qu_ex"):
+        if args.loss == "asl":
+            criterion = ASLSingleLabel(gamma_neg=args.asl_gamma_neg, gamma_pos=args.asl_gamma_pos)
+            print(f"Using ASLSingleLabel (gamma_neg={args.asl_gamma_neg}, gamma_pos={args.asl_gamma_pos})")
+        elif args.class_weight == "balanced":
+            # inverse-frequency (sklearn "balanced"): w_c = N / (K * count_c), read from train list
+            counts = [0] * num_classes
+            with open(args.covid_train_list, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    c = int(line.split()[-1])
+                    if 0 <= c < num_classes:
+                        counts[c] += 1
+            total = sum(counts)
+            w = torch.tensor([(total / (num_classes * n)) if n else 0.0 for n in counts], dtype=torch.float)
+            criterion = torch.nn.CrossEntropyLoss(weight=w)
+            print(f"Using class-balanced CrossEntropyLoss: counts={counts}, weights={w.tolist()}")
+        else:
+            criterion = torch.nn.CrossEntropyLoss()
+    else:
+        criterion = torch.nn.BCEWithLogitsLoss()
     criterion = criterion.to(device)
     optimizer = make_optimizer(args, model)
     start_epoch = 0

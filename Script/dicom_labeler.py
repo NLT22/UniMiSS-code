@@ -6,15 +6,14 @@ This script does not diagnose images. It links existing doctor conclusions to
 DICOM studies, converts those conclusions into weak labels, and prepares review
 or UniMiSSPlus downstream list files.
 
-Typical workflow:
+Typical workflow (single Excel label store: Script/labels.xlsx):
     python dicom_labeler.py extract LABELS.lnk DATA --output labels_raw.csv
-    python dicom_labeler.py check-label-data LABELS.lnk DATA --output-dir label_data_check
-    python dicom_labeler.py classify labels_raw.csv --output labels_classified.csv
-    python dicom_labeler.py classify-xlsx LABELS.xlsx --output labels_all_classified.csv
-    python dicom_labeler.py label-xlsx LABELS.xlsx
-    python dicom_labeler.py phrase-report labels_all_classified.csv --output-dir phrase_report
-    python dicom_labeler.py build-lists labels_classified.csv DATA ../UniMiSSPlusdata --output-dir labels
-    python dicom_labeler.py build-cv-lists labels_all_classified.csv DATA ../UniMiSSPlusdata --output-dir labels/vietnam_xray_cv
+    python dicom_labeler.py classify labels_raw.csv --output Script/labels.xlsx
+    python dicom_labeler.py build-cv-lists Script/labels.xlsx DATA ../UniMiSSPlus_data --output-dir labels/vietnam_xray_cv_clean
+
+read_csv / write_csv accept either .xlsx or .csv by file extension, so the whole
+pipeline can start from and be inspected as one Excel file. labels_raw.csv is a
+throwaway intermediate from `extract`.
 """
 
 import argparse
@@ -300,7 +299,7 @@ ABNORMAL_CONTAINS_PATTERNS = (
     ("pneumothorax", ("tran khi",)),
     ("inflammation", ("viem",)),
     ("fracture", ("gay",)),
-    ("enlarged heart", ("bong tim to", "tim to")),
+    ("enlarged heart", ("bong tim to", "tim to", "tim be", "be that trai")),
     ("bronchial/peribronchial abnormality", (
         "phe huyet quan",
         "phe quan",
@@ -351,19 +350,39 @@ def find_approved_normal_contains(text: str) -> str:
 
 
 def find_approved_abnormal_contains(text: str) -> tuple[str, str]:
+    matches = find_all_approved_abnormal_contains(text)
+    if matches:
+        return matches[0]
+    return "", ""
+
+
+def find_all_approved_abnormal_contains(text: str) -> list[tuple[str, str]]:
+    matches: list[tuple[str, str]] = []
+    seen_notes: set[str] = set()
+
+    def add(evidence: str, note: str) -> None:
+        if note not in seen_notes:
+            matches.append((evidence, note))
+            seen_notes.add(note)
+
     if "vong" in text and any(term in text for term in AORTA_CONTAINS_PATTERNS):
-        return "quai/cung dong mach chu + vong", "quai/cung dong mach chu with vong"
-    if "voi hoa" in text and "quai dong mach chu" in text and (
+        add("quai/cung dong mach chu + vong", "quai/cung dong mach chu with vong")
+    elif "voi hoa" in text and any(term in text for term in AORTA_CONTAINS_PATTERNS) and (
         "day" in text or "mang phoi" in text
     ):
-        return "voi hoa quai dong mach chu + pleural/thickening finding", "aorta calcification plus pleural/thickening finding"
-    if "quai dong mach chu voi hoa" in text:
-        return "quai dong mach chu voi hoa", "aorta calcification"
+        add(
+            "voi hoa quai dong mach chu + pleural/thickening finding",
+            "aorta calcification plus pleural/thickening finding",
+        )
+    elif "voi hoa" in text and any(term in text for term in AORTA_CONTAINS_PATTERNS):
+        add("quai dong mach chu voi hoa", "aorta calcification")
+
     for evidence_label, terms in ABNORMAL_CONTAINS_PATTERNS:
         for term in terms:
             if has_term(text, term):
-                return term, evidence_label
-    return "", ""
+                add(term, evidence_label)
+                break
+    return matches
 
 
 def classify_by_rules(conclusion: str) -> dict:
@@ -381,6 +400,24 @@ def classify_by_rules(conclusion: str) -> dict:
         )
 
     canonical_text = text.rstrip(" .:-")
+    # Abnormal takes priority: any abnormal finding makes the study Abnormal,
+    # even when the conclusion also contains a normal-sounding phrase (e.g.
+    # "trường phổi hai bên sáng đều" reported alongside an aortic bulge or a
+    # clavicle fracture). Checking the normal whitelist first would wrongly
+    # label such mixed conclusions Normal.
+    abnormal_matches = find_all_approved_abnormal_contains(canonical_text)
+    if abnormal_matches:
+        evidence, rule_note = abnormal_matches[0]
+        return label_result(
+            "ABNORMAL",
+            "OTHER_ABNORMAL",
+            [note for _, note in abnormal_matches],
+            evidence,
+            0.90,
+            False,
+            f"approved_abnormal_contains:{rule_note}",
+        )
+
     for normal_phrase in NORMAL_CONCLUSION_PATTERNS:
         if canonical_text == normal_phrase:
             return label_result(
@@ -403,18 +440,6 @@ def classify_by_rules(conclusion: str) -> dict:
             0.90,
             False,
             "approved_lung_normal_other_organ_finding",
-        )
-
-    evidence, rule_note = find_approved_abnormal_contains(canonical_text)
-    if evidence:
-        return label_result(
-            "ABNORMAL",
-            "OTHER_ABNORMAL",
-            ["OTHER_ABNORMAL"],
-            evidence,
-            0.90,
-            False,
-            f"approved_abnormal_contains:{rule_note}",
         )
 
     return label_result(
@@ -508,6 +533,21 @@ def classify_with_llm(conclusion: str, api_key: str, endpoint: str, model: str) 
 
 
 def read_csv(path: str) -> list[dict]:
+    """Read tabular rows. Accepts .xlsx (first sheet) or .csv, transparently,
+    so the whole pipeline can run from a single Excel label file."""
+    if str(path).lower().endswith(".xlsx"):
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        header = [str(h) if h is not None else "" for h in next(it, [])]
+        rows = []
+        for values in it:
+            if values is None or all(v is None for v in values):
+                continue
+            rows.append({header[i]: ("" if v is None else str(v))
+                         for i, v in enumerate(values) if i < len(header)})
+        wb.close()
+        return rows
     with open(path, "r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
 
@@ -521,6 +561,24 @@ def write_csv(path: str | Path, rows: list[dict], preferred_fields=None):
         for field in row:
             if field not in fields:
                 fields.append(field)
+
+    if str(path).lower().endswith(".xlsx"):
+        from openpyxl.styles import Font
+        from openpyxl.comments import Comment
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "labels"
+        ws.append(fields)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        if "normal_abnormal_class" in fields:
+            ws.cell(row=1, column=fields.index("normal_abnormal_class") + 1).comment = \
+                Comment("0 = Abnormal (lớp dương), 1 = Normal", "labels")
+        ws.freeze_panes = "A2"
+        for row in rows:
+            ws.append([row.get(field, "") for field in fields])
+        wb.save(path)
+        return
 
     with open(path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -1111,11 +1169,27 @@ def resolve_label_zip_path(row: dict, data_dir: Path, index: dict[str, list[Path
     return preferred_xray_zip(index.get(match_id, []))
 
 
+def load_patient_map(path: str | Path) -> dict[str, str]:
+    """Load a study_id -> patient_hash CSV (columns: study_id,modality,patient_hash).
+
+    Used to group CV folds by patient instead of by study, since one patient
+    can have multiple studies (see check_patient_leakage.py).
+    """
+    patient_map = {}
+    for row in read_csv(path):
+        study_id = row.get("study_id", "")
+        patient_hash = row.get("patient_hash", "")
+        if study_id and patient_hash and patient_hash != "None":
+            patient_map[study_id] = patient_hash
+    return patient_map
+
+
 def collect_normal_abnormal_xray_samples(
     rows: list[dict],
     data_dir: Path,
     unimiss_data_dir: Path,
     include_review: bool = False,
+    patient_map: dict[str, str] | None = None,
 ) -> tuple[list[dict], Counter]:
     """Collect exported X-ray PNG samples with Normal/Abnormal weak labels."""
     zip_index = data_zip_index(data_dir)
@@ -1153,7 +1227,10 @@ def collect_normal_abnormal_xray_samples(
             sample = dict(row)
             sample["image_path"] = rel_png
             sample["zip_path"] = str(zip_path.relative_to(data_dir)) if zip_path.is_relative_to(data_dir) else str(zip_path)
-            sample["cv_group"] = sample.get("label_match_id") or sample.get("study_uid") or zip_path.stem
+            study_key = sample.get("label_match_id") or sample.get("study_uid") or zip_path.stem
+            patient_hash = patient_map.get(zip_path.stem) if patient_map else None
+            sample["cv_group"] = patient_hash or study_key
+            sample["patient_hash"] = patient_hash or ""
             samples.append(sample)
 
     return samples, skipped
@@ -1323,21 +1400,29 @@ def cmd_build_cv_lists(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    patient_map = load_patient_map(args.patient_map) if args.patient_map else None
+
     samples, skipped = collect_normal_abnormal_xray_samples(
         rows,
         data_dir,
         unimiss_data_dir,
         include_review=args.include_review,
+        patient_map=patient_map,
     )
     if not samples:
         raise ValueError("No eligible exported X-ray samples found. Check DATA path and UniMiSSPlus export path.")
+
+    if patient_map:
+        matched = sum(1 for s in samples if s.get("patient_hash"))
+        print(f"Patient map matched {matched}/{len(samples)} samples ({len({s['patient_hash'] for s in samples if s.get('patient_hash')})} unique patients).")
+        print("Grouping folds by patient, not by study, to avoid same-patient train/test leakage.")
 
     folds = stratified_group_folds(samples, args.folds, args.seed)
     summary_rows = []
     manifest_rows = []
     preferred_manifest = (
         "fold", "split", "image_path", "normal_abnormal_label", "normal_abnormal_class",
-        "label_match_id", "cv_group", "zip_path", "coarse_label", "disease_label",
+        "label_match_id", "cv_group", "patient_hash", "zip_path", "coarse_label", "disease_label",
         "confidence", "needs_review", "evidence", "conclusion",
     )
 
@@ -1416,7 +1501,7 @@ def main():
     )
     classify_parser = subparsers.add_parser("classify", help="Convert conclusions to weak labels")
     classify_parser.add_argument("input", help="Input CSV from extract")
-    classify_parser.add_argument("--output", "-o", default="labels_classified.csv", help="Output CSV path")
+    classify_parser.add_argument("--output", "-o", default="Script/labels.xlsx", help="Output CSV path")
     classify_parser.add_argument("--method", choices=("rules", "llm"), default="rules", help="Classification method")
     classify_parser.add_argument("--api-key", help="OpenAI API key for --method llm")
     classify_parser.add_argument(
@@ -1465,6 +1550,10 @@ def main():
     cv_parser.add_argument("input", help="Classified CSV from classify or classify-xlsx")
     cv_parser.add_argument("data_dir", help="Original DATA directory containing ZIP files")
     cv_parser.add_argument("unimissplus_data_dir", help="Directory containing exported 2D_images/")
+    cv_parser.add_argument(
+        "--patient-map",
+        help="CSV with study_id,modality,patient_hash columns; groups folds by patient instead of by study",
+    )
     cv_parser.add_argument(
         "--output-dir",
         default="labels/vietnam_xray_cv",

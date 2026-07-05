@@ -34,6 +34,10 @@ logs/
 UniMiSSPlus/results/**/*.onnx
 UniMiSSPlus/results/**/*.npz
 
+# Allow Script/results (metrics, curves, Grad-CAM) but exclude cached embeddings/binaries
+Script/results/**/*.npz
+Script/results/**/feature_cache/
+
 # Local datasets
 Data/
 UniMiSS/data/2D images/
@@ -48,10 +52,14 @@ UniMiSSPlus/pycuda_drr/build/
 # Local generated pipeline outputs
 work/
 
-# Script/ generated label CSVs
+# Script/ generated label CSVs and derived per-patient data
 Script/labels_raw.csv
 Script/labels_classified.csv
+Script/labels_all_classified.csv
+Script/labels/
+Script/ANONYMIZE_meta/
 Script/ANONYMIZE
+Script/UniMiSSPlus_data/
 UniMiSS/Downstream/RICORD/dataset/
 UniMiSS/Downstream/BCV/dataset/
 UniMiSSPlus/Downstream/3D/RICORD/dataset/
@@ -62,3 +70,6 @@ UniMiSSPlus/Downstream/3D/BCV/dist/
 
 UniMiSSPlus/*.pptx
 UniMiSSPlus/dataset/
+
+latex
+docs
